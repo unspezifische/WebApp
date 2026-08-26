@@ -1,12 +1,15 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import {
   Add,
+  CheckCircleOutline,
   ChevronLeft,
   ChevronRight,
   Clear,
   DeleteOutline,
+  ErrorOutline,
   ExpandMore,
+  FilterList,
   GraphicEq,
   LibraryMusic,
   MusicNote,
@@ -338,12 +341,12 @@ export function DMSoundPlayerProvider({ headers, socket, enabled = true, childre
     setEffectPlaying(false);
   }, []);
 
-  const uploadSound = useCallback(async ({ file, name, category }) => {
+  const uploadSound = useCallback(async ({ file, name, category, onUploadProgress }) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('name', name);
     formData.append('category', category);
-    const response = await axios.post('/api/sounds', formData, { headers });
+    const response = await axios.post('/api/sounds', formData, { headers, onUploadProgress });
     setSounds((current) => [...current, response.data.sound].sort((a, b) => a.name.localeCompare(b.name)));
     return response.data.sound;
   }, [headers]);
@@ -520,34 +523,138 @@ function QuickEffects({ configurable = false }) {
 export function DMSoundPlayerWorkspace() {
   const player = useSoundPlayer();
   const [filter, setFilter] = useState('all');
+  const [playlistFilter, setPlaylistFilter] = useState('all');
   const [search, setSearch] = useState('');
+  const [soundSort, setSoundSort] = useState('title-asc');
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
-  const [upload, setUpload] = useState({ file: null, name: '', category: 'music' });
+  const [upload, setUpload] = useState({ files: [], name: '', category: 'music' });
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [playlistSelections, setPlaylistSelections] = useState({});
+  const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const visibleSounds = player.sounds.filter((sound) => (
-    (filter === 'all' || sound.category === filter) &&
-    sound.name.toLowerCase().includes(search.trim().toLowerCase())
-  ));
+  const [uploadQueue, setUploadQueue] = useState([]);
+  const uploadSequence = useRef(0);
+  const visibleSounds = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    const playlistTrackIds = new Set(
+      player.playlists
+        .find((playlist) => String(playlist.id) === String(playlistFilter))
+        ?.tracks?.map((track) => String(track.id)) || []
+    );
+    const assignedTrackIds = playlistFilter === 'unassigned'
+      ? new Set(player.playlists.flatMap((playlist) => playlist.tracks || []).map((track) => String(track.id)))
+      : null;
+    const matching = player.sounds.filter((sound) => (
+      (filter === 'all' || sound.category === filter) &&
+      (playlistFilter === 'all' || (
+        playlistFilter === 'unassigned'
+          ? !assignedTrackIds.has(String(sound.id))
+          : playlistTrackIds.has(String(sound.id))
+      )) &&
+      (!query || [sound.name, sound.originalFilename, sound.category, sound.uploadedBy]
+        .filter(Boolean).some((value) => String(value).toLocaleLowerCase().includes(query)))
+    ));
+    const unknownDuration = (sound) => Number.isFinite(Number(sound.durationSeconds)) && Number(sound.durationSeconds) > 0;
+    return matching.sort((left, right) => {
+      if (soundSort.startsWith('length')) {
+        if (unknownDuration(left) !== unknownDuration(right)) return unknownDuration(left) ? -1 : 1;
+        const difference = Number(left.durationSeconds || 0) - Number(right.durationSeconds || 0);
+        return soundSort === 'length-desc' ? -difference : difference;
+      }
+      if (soundSort.startsWith('date')) {
+        const difference = new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime();
+        return soundSort === 'date-desc' ? -difference : difference;
+      }
+      const difference = String(left.name || '').localeCompare(String(right.name || ''), undefined, { numeric: true, sensitivity: 'base' });
+      return soundSort === 'title-desc' ? -difference : difference;
+    });
+  }, [filter, player.playlists, player.sounds, playlistFilter, search, soundSort]);
+
+  useEffect(() => {
+    if (playlistFilter === 'all' || playlistFilter === 'unassigned') return;
+    if (!player.playlists.some((playlist) => String(playlist.id) === String(playlistFilter))) {
+      setPlaylistFilter('all');
+    }
+  }, [player.playlists, playlistFilter]);
+  const selectedPlaylist = player.playlists.find((playlist) => String(playlist.id) === String(playlistFilter));
+
+  const formatDuration = (seconds) => {
+    if (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return 'Length unavailable';
+    const total = Math.round(Number(seconds));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  };
+
+  const updateUploadQueueItem = (id, changes) => {
+    setUploadQueue((current) => current.map((item) => item.id === id ? { ...item, ...changes } : item));
+  };
+
+  const clientUploadError = (file) => {
+    if (!file?.name) return 'The selected file has no filename.';
+    if (!/\.(mp3|wav|ogg|m4a|aac|webm|flac)$/i.test(file.name)) {
+      return 'Unsupported format. Choose MP3, WAV, OGG, M4A, AAC, WebM, or FLAC audio.';
+    }
+    if (file.size === 0) return 'The selected audio file is empty.';
+    if (file.size > 1024 * 1024 * 1024) return 'The file is larger than the 1 GB upload limit.';
+    return '';
+  };
+
+  const uploadFiles = async (entries) => {
+    const queued = entries.map((entry) => {
+      uploadSequence.current += 1;
+      const error = clientUploadError(entry.file);
+      return {
+        ...entry,
+        id: `sound-upload-${Date.now()}-${uploadSequence.current}`,
+        filename: entry.file?.name || 'Unnamed file',
+        progress: 0,
+        status: error ? 'error' : 'uploading',
+        error,
+      };
+    });
+    setUploadQueue((current) => [...current, ...queued]);
+    const uploadable = queued.filter((item) => item.status === 'uploading');
+    if (!uploadable.length) return false;
+
+    setUploading(true);
+    setUploadError('');
+    const results = await Promise.all(uploadable.map(async (item) => {
+      try {
+        await player.uploadSound({
+          file: item.file,
+          name: item.name,
+          category: item.category,
+          onUploadProgress: (progressEvent) => {
+            if (!progressEvent.total) return;
+            const progress = Math.min(99, Math.round((progressEvent.loaded / progressEvent.total) * 100));
+            updateUploadQueueItem(item.id, { progress });
+          },
+        });
+        updateUploadQueueItem(item.id, { progress: 100, status: 'complete' });
+        return true;
+      } catch (requestError) {
+        const message = requestError.response?.data?.message || requestError.message || 'The upload could not be completed.';
+        updateUploadQueueItem(item.id, { status: 'error', error: message });
+        return false;
+      }
+    }));
+    setUploading(false);
+    return results.every(Boolean) && queued.every((item) => item.status !== 'error');
+  };
 
   const submitUpload = async (event) => {
     event.preventDefault();
-    if (!upload.file) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      await player.uploadSound({
-        ...upload,
-        name: upload.name.trim() || upload.file.name.replace(/\.[^.]+$/, ''),
-      });
-      setUpload({ file: null, name: '', category: 'music' });
+    if (!upload.files.length) return;
+    const uploaded = await uploadFiles(upload.files.map((file) => ({
+      file,
+      category: upload.category,
+      name: upload.files.length === 1 && upload.name.trim()
+        ? upload.name.trim()
+        : file.name.replace(/\.[^.]+$/, ''),
+    })));
+    if (uploaded) {
+      setUpload({ files: [], name: '', category: 'music' });
       event.target.reset();
-    } catch (requestError) {
-      setUploadError(requestError.response?.data?.message || 'Upload failed.');
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -574,29 +681,12 @@ export function DMSoundPlayerWorkspace() {
   };
 
   const uploadDroppedFiles = async (files) => {
-    const audioFiles = [...files].filter((file) => (
-      file.type.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|aac|webm|flac)$/i.test(file.name)
-    ));
-    if (!audioFiles.length) {
-      setUploadError('Drop one or more audio files onto the Music Player.');
-      return;
-    }
-    setUploading(true);
-    setUploadError('');
-    try {
-      for (const file of audioFiles) {
-        await player.uploadSound({
-          file,
-          name: file.name.replace(/\.[^.]+$/, ''),
-          category: upload.category,
-        });
-      }
-    } catch (requestError) {
-      setUploadError(requestError.response?.data?.message || 'One or more files could not be uploaded.');
-    } finally {
-      setUploading(false);
-      setDraggingFiles(false);
-    }
+    await uploadFiles([...files].map((file) => ({
+      file,
+      name: file.name.replace(/\.[^.]+$/, ''),
+      category: upload.category,
+    })));
+    setDraggingFiles(false);
   };
 
   const handleWorkspaceDrop = (event) => {
@@ -618,95 +708,65 @@ export function DMSoundPlayerWorkspace() {
       onDrop={handleWorkspaceDrop}
     >
       {draggingFiles && <div className="sound-drop-overlay"><Upload /><strong>Drop audio files to upload</strong><span>They will use the selected upload type: {upload.category}</span></div>}
-      <div className="sound-decks">
-        <section className="sound-deck sound-deck-background">
-          <div className="sound-deck-icon"><LibraryMusic /></div>
-          <div className="sound-deck-main">
-            <span className="sound-eyebrow">Background deck</span>
-            <h3>{player.backgroundTrack?.name || 'Choose ambience or music'}</h3>
-            <p>{player.backgroundPlaying ? 'Playing continuously under your session' : 'Stopped'}</p>
-            <VolumeControl label="Background volume" value={player.backgroundVolume} onChange={player.setBackgroundVolume} />
-          </div>
-          <div className="sound-deck-controls">
-            <button type="button" onClick={player.toggleBackground} disabled={!player.backgroundTrack} aria-label={player.backgroundPlaying ? 'Pause background' : 'Play background'}>
-              {player.backgroundPlaying ? <Pause /> : <PlayArrow />}
-            </button>
-            <button type="button" onClick={player.stopBackground} disabled={!player.backgroundTrack} aria-label="Stop background"><Stop /></button>
-          </div>
-          <div className="sound-deck-options">
-            <label><input type="checkbox" checked={player.loopBackground} onChange={(event) => player.setLoopBackground(event.target.checked)} /> Loop</label>
-            <label>
-              Crossfade
-              <select value={player.crossfadeSeconds} onChange={(event) => player.setCrossfadeSeconds(Number(event.target.value))}>
-                <option value="0">Off</option>
-                <option value="2">2 sec</option>
-                <option value="3">3 sec</option>
-                <option value="5">5 sec</option>
-                <option value="8">8 sec</option>
-              </select>
-            </label>
-          </div>
-        </section>
-
-        <section className="sound-deck sound-deck-effects">
-          <div className="sound-deck-icon"><GraphicEq /></div>
-          <div className="sound-deck-main">
-            <span className="sound-eyebrow">Sound FX deck</span>
-            <h3>{player.effectTrack?.name || 'Ready for a one-shot effect'}</h3>
-            <p>{player.effectPlaying ? 'Effect playing' : 'Independent from background audio'}</p>
-            <VolumeControl label="Effects volume" value={player.effectVolume} onChange={player.setEffectVolume} />
-          </div>
-          <div className="sound-deck-controls">
-            <button type="button" onClick={() => player.effectTrack && player.playEffect(player.effectTrack)} disabled={!player.effectTrack} aria-label="Replay sound effect"><PlayArrow /></button>
-            <button type="button" onClick={player.stopEffect} disabled={!player.effectTrack} aria-label="Stop sound effect"><Stop /></button>
-          </div>
-        </section>
-      </div>
 
       {(player.error || uploadError) && <div className="sound-error" role="alert">{uploadError || player.error}</div>}
 
-      <section className="sound-quick-effects-panel">
-        <QuickEffects configurable />
-      </section>
-
-      <section className="sound-playlists-panel">
-        <div className="sound-library-header">
-          <div><span className="sound-eyebrow">Campaign playlists</span><h3>Scene music</h3></div>
+      <div className="sound-library-layout">
+        <aside className="sound-playlist-sidebar">
+          <div className="sound-sidebar-heading">
+            <div><span className="sound-eyebrow">Library</span><h3>Playlists</h3></div>
+            <button type="button" className="sound-sidebar-upload-toggle" onClick={() => setUploadPanelOpen((open) => !open)} aria-expanded={uploadPanelOpen} aria-controls="sound-upload-drawer"><Upload fontSize="small" /> Upload</button>
+          </div>
           <form className="sound-playlist-create" onSubmit={submitPlaylist}>
             <input aria-label="New playlist name" maxLength="120" placeholder="New playlist" value={newPlaylistName} onChange={(event) => setNewPlaylistName(event.target.value)} />
-            <button type="submit" disabled={!newPlaylistName.trim()}><Add fontSize="small" /> Create</button>
+            <button type="submit" disabled={!newPlaylistName.trim()} aria-label="Create playlist"><Add fontSize="small" /></button>
           </form>
-        </div>
-        <div className="sound-playlist-grid">
-          {player.playlists.map((playlist) => (
-            <article className="sound-playlist-card" key={playlist.id}>
-              <div>
-                <strong>{playlist.name}</strong>
-                <small>{playlist.tracks.length} track{playlist.tracks.length === 1 ? '' : 's'}</small>
+          <nav className="sound-playlist-list" aria-label="Music library views">
+            <button type="button" className={playlistFilter === 'all' ? 'is-active' : ''} onClick={() => setPlaylistFilter('all')}><LibraryMusic fontSize="small" /><span>All tracks</span><small>{player.sounds.length}</small></button>
+            <button type="button" className={playlistFilter === 'unassigned' ? 'is-active' : ''} onClick={() => setPlaylistFilter('unassigned')}><FilterList fontSize="small" /><span>Not in a playlist</span></button>
+            <div className="sound-playlist-list-label">Your playlists</div>
+            {player.playlists.map((playlist) => (
+              <div className={`sound-playlist-list-item${String(playlist.id) === String(playlistFilter) ? ' is-active' : ''}`} key={playlist.id}>
+                <button type="button" className="sound-playlist-select" onClick={() => setPlaylistFilter(String(playlist.id))} title={`View ${playlist.name}`}>
+                  <QueueMusic fontSize="small" /><span><strong>{playlist.name}</strong><small>{playlist.tracks.length} track{playlist.tracks.length === 1 ? '' : 's'}</small></span>
+                </button>
+                <button type="button" onClick={() => player.startPlaylist(playlist)} disabled={!playlist.tracks.length} aria-label={`Play ${playlist.name}`}><PlayArrow fontSize="small" /></button>
               </div>
-              <label className="sound-shuffle-toggle" title="Randomize this playlist each time it starts">
-                <input type="checkbox" checked={playlist.shuffle} onChange={(event) => player.updatePlaylist(playlist.id, { shuffle: event.target.checked })} />
-                <Shuffle fontSize="small" /> Shuffle
-              </label>
-              <button type="button" onClick={() => player.startPlaylist(playlist)} disabled={!playlist.tracks.length}><PlayArrow fontSize="small" /> Play</button>
-              <button type="button" className="sound-icon-danger" onClick={() => player.deletePlaylist(playlist.id)} aria-label={`Delete ${playlist.name}`}><DeleteOutline fontSize="small" /></button>
-              {playlist.tracks.length > 0 && (
-                <div className="sound-playlist-tracks">
-                  {playlist.tracks.map((track) => (
-                    <span key={track.id}>{track.name}<button type="button" onClick={() => player.removeTrackFromPlaylist(playlist.id, track.id)} aria-label={`Remove ${track.name} from ${playlist.name}`}><Clear fontSize="inherit" /></button></span>
-                  ))}
-                </div>
-              )}
-            </article>
+            ))}
+          </nav>
+          {player.playlists.map((playlist) => String(playlist.id) === String(playlistFilter) && (
+            <div className="sound-selected-playlist-tools" key={`tools-${playlist.id}`}>
+              <label><input type="checkbox" checked={playlist.shuffle} onChange={(event) => player.updatePlaylist(playlist.id, { shuffle: event.target.checked })} /><Shuffle fontSize="small" /> Shuffle playback</label>
+              <button type="button" className="sound-icon-danger" onClick={() => player.deletePlaylist(playlist.id)}><DeleteOutline fontSize="small" /> Delete playlist</button>
+            </div>
           ))}
-        </div>
-      </section>
-
-      <div className="sound-library-layout">
+          {uploadPanelOpen && (
+            <form id="sound-upload-drawer" className="sound-upload-drawer" onSubmit={submitUpload}>
+              <strong>Upload audio</strong>
+              <p>Choose files here or drop them anywhere on this page.</p>
+              <label>Files<input type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.webm,.flac" multiple required onChange={(event) => setUpload((current) => ({ ...current, files: [...event.target.files] }))} /></label>
+              <label>Name<input type="text" maxLength="120" disabled={upload.files.length > 1} placeholder={upload.files.length === 1 ? upload.files[0].name.replace(/\.[^.]+$/, '') : 'Uses each filename'} value={upload.files.length > 1 ? '' : upload.name} onChange={(event) => setUpload((current) => ({ ...current, name: event.target.value }))} /></label>
+              <label>Type<select value={upload.category} onChange={(event) => setUpload((current) => ({ ...current, category: event.target.value }))}><option value="music">Background music</option><option value="environment">Environment</option><option value="sfx">Sound effect</option></select></label>
+              <button type="submit" className="sound-upload-button" disabled={!upload.files.length || uploading}><Add fontSize="small" /> {uploading ? 'Uploading…' : 'Add to library'}</button>
+              <small>Up to 1 GB each; WAV and FLAC are compressed after upload.</small>
+            </form>
+          )}
+          <QuickEffects configurable />
+        </aside>
         <section className="sound-library-panel">
           <div className="sound-library-header">
             <div><span className="sound-eyebrow">Shared with every DM</span><h3>Sound library</h3></div>
-            <input type="search" placeholder="Search sounds" value={search} onChange={(event) => setSearch(event.target.value)} />
+            <div className="sound-library-controls">
+              <input type="search" aria-label="Search sound library" placeholder="Search sounds" value={search} onChange={(event) => setSearch(event.target.value)} />
+              <select aria-label="Sort sound library" value={soundSort} onChange={(event) => setSoundSort(event.target.value)}>
+                <option value="title-asc">Title: A–Z</option>
+                <option value="title-desc">Title: Z–A</option>
+                <option value="date-desc">Date added: newest</option>
+                <option value="date-asc">Date added: oldest</option>
+                <option value="length-asc">Length: shortest</option>
+                <option value="length-desc">Length: longest</option>
+              </select>
+            </div>
           </div>
           <div className="sound-filter-tabs" role="tablist" aria-label="Sound categories">
             {['all', 'music', 'environment', 'sfx'].map((category) => (
@@ -717,7 +777,7 @@ export function DMSoundPlayerWorkspace() {
           </div>
           <div className="sound-library-list">
             {player.loading ? <p className="sound-empty">Loading shared sounds…</p> : visibleSounds.length === 0 ? (
-              <div className="sound-empty"><MusicNote /><strong>No sounds here yet</strong><span>Upload the first track using the panel beside the library.</span></div>
+              <div className="sound-empty"><MusicNote /><strong>No matching tracks</strong><span>Try another playlist, category, or search.</span></div>
             ) : visibleSounds.map((sound) => (
               <div
                 className={`sound-library-row${sound.category === 'sfx' ? ' is-draggable' : ''}`}
@@ -728,10 +788,11 @@ export function DMSoundPlayerWorkspace() {
                   event.dataTransfer.effectAllowed = 'copy';
                 }}
               >
-                <span className={`sound-category-mark is-${sound.category}`}><MusicNote fontSize="small" /></span>
-                <span className="sound-library-copy"><strong>{sound.name}</strong><small>{sound.category === 'sfx' ? 'Sound FX' : sound.category} · Added by {sound.uploadedBy || 'a DM'}</small></span>
+                <span className={`sound-category-mark is-${sound.category}${sound.coverUrl ? ' has-cover' : ''}`}>{sound.coverUrl ? <img src={sound.coverUrl} alt="" loading="lazy" /> : <MusicNote fontSize="small" />}</span>
+                <span className="sound-library-copy"><strong>{sound.name}</strong><small>{sound.category === 'sfx' ? 'Sound FX' : sound.category} · {formatDuration(sound.durationSeconds)} · Added by {sound.uploadedBy || 'a DM'}</small></span>
                 <div className="sound-library-actions">
                   {sound.category !== 'sfx' && <button type="button" className="sound-queue-button" onClick={() => player.enqueueTrack(sound)} title="Add to queue"><QueueMusic fontSize="small" /> Queue</button>}
+                  {selectedPlaylist && <button type="button" className="sound-queue-button sound-remove-from-playlist" onClick={() => player.removeTrackFromPlaylist(selectedPlaylist.id, sound.id)} title={`Remove from ${selectedPlaylist.name}`}><Clear fontSize="small" /> Remove</button>}
                   <button type="button" className="sound-play-button" onClick={() => sound.category === 'sfx' ? player.playEffect(sound) : player.playBackground(sound)}>
                     <PlayArrow fontSize="small" /> {sound.category === 'sfx' ? 'Fire' : 'Play'}
                   </button>
@@ -749,19 +810,47 @@ export function DMSoundPlayerWorkspace() {
             ))}
           </div>
         </section>
-
-        <form className="sound-upload-panel" onSubmit={submitUpload}>
-          <div className="sound-upload-icon"><Upload /></div>
-          <span className="sound-eyebrow">Add to the server</span>
-          <h3>Upload a sound</h3>
-          <p>Uploaded sounds become available to every DM who can open this player. You can also drop audio files anywhere on this page.</p>
-          <label>Audio file<input type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.webm,.flac" required onChange={(event) => setUpload((current) => ({ ...current, file: event.target.files[0] || null }))} /></label>
-          <label>Display name<input type="text" maxLength="120" placeholder={upload.file?.name.replace(/\.[^.]+$/, '') || 'e.g. Forest at dusk'} value={upload.name} onChange={(event) => setUpload((current) => ({ ...current, name: event.target.value }))} /></label>
-          <label>Type<select value={upload.category} onChange={(event) => setUpload((current) => ({ ...current, category: event.target.value }))}><option value="music">Background music</option><option value="environment">Environment</option><option value="sfx">Sound effect</option></select></label>
-          <button type="submit" className="sound-upload-button" disabled={!upload.file || uploading}><Add fontSize="small" /> {uploading ? 'Uploading…' : 'Add to library'}</button>
-          <small>MP3, WAV, OGG, M4A, AAC, WebM, or FLAC · 50 MB maximum</small>
-        </form>
       </div>
+
+      <section className="sound-now-playing" aria-label="Now playing">
+        <span className="sound-now-playing-label">Now playing</span>
+        <div className="sound-decks">
+          <div className="sound-deck sound-deck-background">
+            <div className={`sound-deck-icon${player.backgroundTrack?.coverUrl ? ' has-cover' : ''}`}>{player.backgroundTrack?.coverUrl ? <img src={player.backgroundTrack.coverUrl} alt="" /> : <LibraryMusic />}</div>
+            <div className="sound-deck-main"><span className="sound-eyebrow">Background</span><h3>{player.backgroundTrack?.name || 'Nothing selected'}</h3><VolumeControl label="Volume" value={player.backgroundVolume} onChange={player.setBackgroundVolume} /></div>
+            <div className="sound-deck-controls"><button type="button" onClick={player.toggleBackground} disabled={!player.backgroundTrack} aria-label={player.backgroundPlaying ? 'Pause background' : 'Play background'}>{player.backgroundPlaying ? <Pause /> : <PlayArrow />}</button><button type="button" onClick={player.stopBackground} disabled={!player.backgroundTrack} aria-label="Stop background"><Stop /></button></div>
+            <div className="sound-deck-options"><label><input type="checkbox" checked={player.loopBackground} onChange={(event) => player.setLoopBackground(event.target.checked)} /> Loop</label><label>Fade<select value={player.crossfadeSeconds} onChange={(event) => player.setCrossfadeSeconds(Number(event.target.value))}><option value="0">Off</option><option value="2">2s</option><option value="3">3s</option><option value="5">5s</option><option value="8">8s</option></select></label></div>
+          </div>
+          <div className="sound-deck sound-deck-effects">
+            <div className="sound-deck-icon"><GraphicEq /></div>
+            <div className="sound-deck-main"><span className="sound-eyebrow">Sound FX</span><h3>{player.effectTrack?.name || 'Ready for an effect'}</h3><VolumeControl label="Volume" value={player.effectVolume} onChange={player.setEffectVolume} /></div>
+            <div className="sound-deck-controls"><button type="button" onClick={() => player.effectTrack && player.playEffect(player.effectTrack)} disabled={!player.effectTrack} aria-label="Replay sound effect"><PlayArrow /></button><button type="button" onClick={player.stopEffect} disabled={!player.effectTrack} aria-label="Stop sound effect"><Stop /></button></div>
+          </div>
+        </div>
+      </section>
+
+      {uploadQueue.length > 0 && (
+        <aside className="sound-upload-queue" aria-label="Sound uploads">
+          <header>
+            <div><span className="sound-eyebrow">Uploads</span><strong>{uploadQueue.length} file{uploadQueue.length === 1 ? '' : 's'}</strong></div>
+            <button type="button" onClick={() => setUploadQueue([])} aria-label="Clear upload list"><Clear fontSize="small" /></button>
+          </header>
+          <div className="sound-upload-queue-list">
+            {uploadQueue.map((item) => (
+              <div className={`sound-upload-queue-item is-${item.status}`} key={item.id}>
+                <span className="sound-upload-filename" title={item.filename}>{item.filename}</span>
+                {item.status === 'error' ? (
+                  <span className="sound-upload-error-indicator" role="img" aria-label={`Upload failed for ${item.filename}: ${item.error}`} title={item.error} data-error={item.error}><ErrorOutline /></span>
+                ) : item.status === 'complete' ? (
+                  <span className="sound-upload-complete" role="img" aria-label={`Uploaded ${item.filename}`}><CheckCircleOutline /></span>
+                ) : (
+                  <span className="sound-upload-progress" role="progressbar" aria-label={`Uploading ${item.filename}: ${item.progress}%`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={item.progress} style={{ '--sound-upload-progress': `${item.progress}%` }}><span>{item.progress}</span></span>
+                )}
+              </div>
+            ))}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }
@@ -880,6 +969,7 @@ export function DMSoundPlayerBar({ hidden, onExpand, quickFxConfigurable = false
         title="Drag to move the player"
       >
         <button type="button" className="sound-progress-button" onClick={toggleFromIcon} aria-label={player.backgroundTrack ? (player.backgroundPlaying ? 'Pause background' : 'Play background') : 'Open sound controls'}>
+          {player.backgroundTrack?.coverUrl && <img className="sound-mini-cover" src={player.backgroundTrack.coverUrl} alt="" />}
           {player.backgroundPlaying ? <Pause /> : player.backgroundTrack ? <PlayArrow /> : <MusicNote />}
         </button>
       </div>
@@ -904,7 +994,7 @@ export function DMSoundPlayerBar({ hidden, onExpand, quickFxConfigurable = false
           <div className="sound-mini-panel-heading"><strong>Up next</strong><span>{player.queue.length} queued</span></div>
           <div className="sound-mini-queue">
             {player.queue.length === 0 ? <p>Queue is empty. Add tracks from the sound library or start a playlist.</p> : player.queue.map((track, index) => (
-              <div key={`${track.id}-${index}`}><MusicNote fontSize="small" /><span>{track.name}</span><button type="button" onClick={() => player.removeQueuedTrack(index)} aria-label={`Remove ${track.name} from queue`}><Clear fontSize="small" /></button></div>
+              <div key={`${track.id}-${index}`}>{track.coverUrl ? <img className="sound-queue-cover" src={track.coverUrl} alt="" /> : <MusicNote fontSize="small" />}<span>{track.name}</span><button type="button" onClick={() => player.removeQueuedTrack(index)} aria-label={`Remove ${track.name} from queue`}><Clear fontSize="small" /></button></div>
             ))}
           </div>
           <div className="sound-mini-queue-actions">

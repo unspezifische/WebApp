@@ -1,4 +1,4 @@
-import { calibrateReferenceLayer, firstPersonLookAngles, heightmapHeightAt, insertRoadControlPoint, nearestRoadPoint, pitchPositionAroundTarget, referenceLayerUv, resizeBuildingFromCorner, roadWidthAt, rotatePositionAroundVerticalAxis, snapBuildingPlacement, terrainHeightAt, terrainSurfaceWeights, waterFlowSpeed } from './settlementEditor';
+import { calibrateReferenceLayer, createTerrainHeightSampler, firstPersonLookAngles, heightmapHeightAt, insertClosedBoundaryPoint, insertRoadControlPoint, nearestRoadPoint, pitchPositionAroundTarget, referenceLayerUv, resizeBuildingFromCorner, roadWidthAt, rotatePositionAroundVerticalAxis, snapBuildingPlacement, snapRegionBoundaryPoint, snapRoadNetworkPoint, snapRoadSplineTranslation, terrainHeightAt, terrainSurfaceWeights, waterDepthAtSeaLevel, waterFlowSpeed } from './settlementEditor';
 
 test('camera rotation preserves radius and opposite turns restore the position', () => {
   const target={x:3,y:0,z:-2},position={x:13,y:15,z:8};
@@ -51,6 +51,13 @@ test('terrain strokes blend smoothly and stop at their radius', () => {
   expect(terrainHeightAt(strokes,50,0)).toBeCloseTo(11.25);
 });
 
+test('flatten and smooth terrain strokes blend toward their sampled target', () => {
+  const flatten={x:0,y:0,radius:100,mode:'flatten',target_elevation_feet:-40,amount:.5};
+  const smooth={x:0,y:0,radius:100,mode:'smooth',target_elevation_feet:20,amount:.25};
+  expect(terrainHeightAt([flatten],0,0,{values:[255],grid_width:1,grid_height:1,width_feet:100,height_feet:100,min_elevation_feet:0,max_elevation_feet:100})).toBe(30);
+  expect(terrainHeightAt([smooth],0,0,{values:[0],grid_width:1,grid_height:1,width_feet:100,height_feet:100,min_elevation_feet:0,max_elevation_feet:100})).toBe(5);
+});
+
 test('heightmaps are bilinearly sampled in world-foot bounds and remain sculptable', () => {
   const heightmap={grid_width:2,grid_height:2,values:[0,255,0,255],width_feet:100,height_feet:100,origin_x:0,origin_y:0,min_elevation_feet:0,max_elevation_feet:200};
   expect(heightmapHeightAt(heightmap,-50,0)).toBe(0);
@@ -82,6 +89,12 @@ test('river flow accelerates when channels narrow, shallow, or steepen', () => {
   expect(waterFlowSpeed({width_feet:60,depth_feet:10,slope:.08})).toBeGreaterThan(broad);
 });
 
+test('ocean depth is positive only when terrain lies below sea level', () => {
+  expect(waterDepthAtSeaLevel(-40,0)).toBe(40);
+  expect(waterDepthAtSeaLevel(40,0)).toBe(-40);
+  expect(waterDepthAtSeaLevel(-120,-100)).toBe(20);
+});
+
 test('nearestRoadPoint projects onto a road segment', () => {
   const hit=nearestRoadPoint({x:40,y:30},[{id:'road',width_feet:30,points:[{x:0,y:0},{x:100,y:0}]}]);
   expect(hit.point).toEqual({x:40,y:0});
@@ -100,6 +113,13 @@ test('clicking the closing span of a closed wall inserts a control point', () =>
   const updated=insertRoadControlPoint(wall,{x:45,y:55});
   expect(updated.points).toHaveLength(4);
   expect(updated.points[3]).toEqual({x:50,y:50,width_feet:24});
+});
+
+test('a closed boundary inserts the clicked point between the nearest neighboring vertices', () => {
+  const region={id:'district',points:[{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}]};
+  const updated=insertClosedBoundaryPoint(region,{x:62,y:72});
+  expect(updated.points).toEqual([{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:62,y:72},{x:0,y:100}]);
+  expect(region.points).toHaveLength(4);
 });
 
 test('road width interpolates between control points and survives point insertion', () => {
@@ -142,4 +162,61 @@ test('a road-fronting building remains edge-snapped when its footprint expands',
   const building={id:'warehouse',x:0,y:30,width_feet:40,depth_feet:30,rotation:0,front_road_id:'road'};
   const resized=resizeBuildingFromCorner(building,{x:35,y:-25},{x:1,y:-1},roads);
   expect(resized.y-resized.depth_feet/2).toBeCloseTo(15);
+});
+
+test('region boundaries snap to a nearby vertex before leaving a gap', () => {
+  const regions=[{id:'north',points:[{x:100,y:200},{x:300,y:200}]}];
+  expect(snapRegionBoundaryPoint({x:112,y:191},regions,[])).toEqual({x:100,y:200});
+});
+
+test('region boundaries snap to a nearby road centerline', () => {
+  const roads=[{id:'high-road',points:[{x:0,y:50},{x:500,y:50}]}];
+  expect(snapRegionBoundaryPoint({x:220,y:68},[],roads)).toEqual({x:220,y:50});
+});
+
+test('region boundary snapping prioritizes a wall segment over a nearby road', () => {
+  const roads=[{points:[{x:0,y:40},{x:100,y:40}]}];
+  const fortifications=[{closed:false,points:[{x:0,y:60},{x:100,y:60}]}];
+  expect(snapRegionBoundaryPoint({x:50,y:48},[],roads,{tolerance:20,fortifications})).toEqual({x:50,y:60});
+});
+
+test('region boundary snapping prioritizes a neighboring district vertex over infrastructure', () => {
+  const regions=[{id:'neighbor',points:[{x:52,y:51},{x:100,y:100},{x:0,y:100}]}];
+  const fortifications=[{points:[{x:0,y:60},{x:100,y:60}]}];
+  expect(snapRegionBoundaryPoint({x:50,y:50},regions,[],{regionId:'edited',tolerance:20,fortifications})).toEqual({x:52,y:51});
+});
+
+test('spatial terrain sampling exactly matches sequential stroke evaluation', () => {
+  const strokes=[
+    {x:0,y:0,radius:200,mode:'raise',delta:20},
+    {x:25,y:15,radius:80,mode:'flatten',target_elevation_feet:7,amount:.6},
+    {x:300,y:300,radius:40,mode:'lower',delta:-5},
+  ];
+  const sample=createTerrainHeightSampler(strokes);
+  [[0,0],[25,15],[95,30],[300,300],[-400,120]].forEach(([x,y])=>{
+    expect(sample(x,y)).toBeCloseTo(terrainHeightAt(strokes,x,y),10);
+  });
+});
+
+test('road network points snap only to control points on other roads', () => {
+  const roads=[
+    {id:'edited',points:[{x:0,y:0},{x:100,y:0}]},
+    {id:'cross-road',points:[{x:112,y:93},{x:200,y:100}]},
+  ];
+  expect(snapRoadNetworkPoint({x:106,y:88,width_feet:30},roads,{roadId:'edited',tolerance:20})).toEqual({x:112,y:93,width_feet:30});
+  expect(snapRoadNetworkPoint({x:94,y:4},roads,{roadId:'edited',tolerance:20})).toEqual({x:94,y:4});
+});
+
+test('moving a whole road preserves its shape while snapping one control point into the network', () => {
+  const roads=[{id:'other',points:[{x:100,y:100},{x:200,y:100}]}];
+  expect(snapRoadSplineTranslation([{x:94,y:93},{x:44,y:43}],roads,{roadId:'moving',tolerance:20})).toEqual([{x:100,y:100},{x:50,y:50}]);
+});
+
+test('editing a region point does not collapse it onto another point in the same region', () => {
+  const regions=[
+    {id:'edited',points:[{x:0,y:0},{x:100,y:0},{x:100,y:100}]},
+    {id:'neighbor',points:[{x:115,y:15},{x:200,y:15},{x:200,y:100}]},
+  ];
+  expect(snapRegionBoundaryPoint({x:92,y:8},regions,[],{regionId:'edited',pointIndex:1})).toEqual({x:115,y:15});
+  expect(snapRegionBoundaryPoint({x:72,y:8},[regions[0]],[],{regionId:'edited',pointIndex:1})).toEqual({x:72,y:8});
 });

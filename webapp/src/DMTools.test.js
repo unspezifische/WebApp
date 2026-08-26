@@ -16,6 +16,62 @@ describe('DMTools Component', () => {
     mock.reset();
   });
 
+  test('groups tools by preparation and live-session use', () => {
+    render(
+      <BrowserRouter>
+        <DMTools headers={headers} />
+      </BrowserRouter>
+    );
+
+    expect(screen.getByText('Prepare')).toBeInTheDocument();
+    expect(screen.getByText('Run')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Enter Combat' })).toBeInTheDocument();
+    expect(screen.queryByText('Roll / Randomize')).not.toBeInTheDocument();
+  });
+
+  test('NPC and loot workspaces show one create button each', async () => {
+    mock.onGet('/api/npcs').reply(200, []);
+    mock.onGet('/api/lootboxes').reply(200, { lootBoxes: [] });
+
+    render(
+      <BrowserRouter>
+        <DMTools headers={headers} />
+      </BrowserRouter>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'NPC Library' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Create NPC' })).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Loot Boxes' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Create Loot Box' })).toHaveLength(1));
+  });
+
+  test('filters, sorts, and configures NPC Library columns', async () => {
+    mock.onGet('/api/npcs').reply(200, [
+      { id: 1, name: 'Veteran Guard', creature_type: 'Humanoid', challenge: '3', ac: '17', hp: '58', strength: 16 },
+      { id: 2, name: 'Apprentice Mage', creature_type: 'Humanoid', challenge: '1/4', ac: '12', hp: '9', strength: 8 },
+    ]);
+    render(
+      <BrowserRouter>
+        <DMTools headers={headers} />
+      </BrowserRouter>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'NPC Library' }));
+    await screen.findByText('Veteran Guard');
+    fireEvent.click(screen.getByRole('button', { name: 'Sort NPCs by CR' }));
+    const rows = screen.getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('Apprentice Mage');
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search NPC library' }), { target: { value: 'veteran' } });
+    expect(screen.getByText('Veteran Guard')).toBeInTheDocument();
+    expect(screen.queryByText('Apprentice Mage')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/Columns/));
+    fireEvent.click(screen.getByLabelText('STR'));
+    expect(screen.getByRole('button', { name: 'Sort NPCs by STR' })).toBeInTheDocument();
+  });
+
   test('fetches and displays loot boxes', async () => {
     // Mock the GET request for loot boxes
     mock.onGet('/api/lootboxes').reply(200, {

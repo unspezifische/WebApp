@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Modal, Form, ListGroup } from 'react-bootstrap';
 import { Table, InputGroup, FormControl } from 'react-bootstrap';
@@ -24,6 +24,46 @@ import { DMSoundPlayerWorkspace } from './DMSoundPlayer';
 import CampaignSettings from './CampaignSettings';
 
 const alignments = ['Any Alignment', 'Any Good Alignment', 'Lawful Good', 'Neutral Good', 'Chaotic Good', 'Lawful Neutral', 'Neutral', 'Chaotic Neutral', 'Lawful Evil', 'Neutral Evil', 'Chaotic Evil', 'Any Non-good Alignment'];
+
+const NPC_COLUMNS = [
+  { key: 'name', label: 'Name', defaultVisible: true },
+  { key: 'creature_type', label: 'Type', defaultVisible: true },
+  { key: 'size', label: 'Size', defaultVisible: false },
+  { key: 'alignment', label: 'Alignment', defaultVisible: false },
+  { key: 'challenge', label: 'CR', defaultVisible: true },
+  { key: 'ac', label: 'AC', defaultVisible: true },
+  { key: 'hp', label: 'HP', defaultVisible: true },
+  { key: 'speed', label: 'Speed', defaultVisible: false },
+  { key: 'strength', label: 'STR', defaultVisible: false },
+  { key: 'dexterity', label: 'DEX', defaultVisible: false },
+  { key: 'constitution', label: 'CON', defaultVisible: false },
+  { key: 'intelligence', label: 'INT', defaultVisible: false },
+  { key: 'wisdom', label: 'WIS', defaultVisible: false },
+  { key: 'charisma', label: 'CHA', defaultVisible: false },
+];
+const NPC_COLUMN_STORAGE_KEY = 'kachhapa-npc-library-columns';
+
+const initialNpcColumns = () => {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(NPC_COLUMN_STORAGE_KEY));
+    if (Array.isArray(stored)) {
+      const valid = stored.filter((key) => NPC_COLUMNS.some((column) => column.key === key));
+      if (valid.length) return valid;
+    }
+  } catch (error) {
+    // Ignore unavailable or malformed local preferences.
+  }
+  return NPC_COLUMNS.filter((column) => column.defaultVisible).map((column) => column.key);
+};
+
+const npcChallengeValue = (value) => {
+  const token = String(value ?? '').trim().split(/\s+/)[0];
+  if (token.includes('/')) {
+    const [numerator, denominator] = token.split('/').map(Number);
+    return denominator ? numerator / denominator : 0;
+  }
+  return Number(token) || 0;
+};
 
 const InputFormGroup = ({ label, type, value, onChange, name, placeholder }) => (
   <Form.Group>
@@ -70,6 +110,9 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
   }, [soundPlayerOpenRequest]);
 
   const [npcs, setNpcs] = useState([]);
+  const [npcSearch, setNpcSearch] = useState('');
+  const [npcSort, setNpcSort] = useState({ key: 'name', direction: 'asc' });
+  const [npcVisibleColumns, setNpcVisibleColumns] = useState(initialNpcColumns);
   const [npcModalOpen, setNpcModalOpen] = useState(false);
   const [npcData, setNpcData] = useState({
     name: '',
@@ -96,6 +139,43 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
   });
 
   const [selectedNpc, setSelectedNpc] = useState(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(NPC_COLUMN_STORAGE_KEY, JSON.stringify(npcVisibleColumns));
+  }, [npcVisibleColumns]);
+
+  const displayedNpcs = useMemo(() => {
+    const query = npcSearch.trim().toLocaleLowerCase();
+    const matching = npcs.filter((npc) => !query || Object.values(npc)
+      .filter((value) => value !== null && value !== undefined)
+      .some((value) => String(value).toLocaleLowerCase().includes(query)));
+
+    return [...matching].sort((left, right) => {
+      const key = npcSort.key;
+      let comparison;
+      if (key === 'challenge') {
+        comparison = npcChallengeValue(left[key]) - npcChallengeValue(right[key]);
+      } else if (['speed', 'strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma'].includes(key)) {
+        comparison = Number(left[key] || 0) - Number(right[key] || 0);
+      } else {
+        comparison = String(left[key] ?? '').localeCompare(String(right[key] ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+      }
+      return npcSort.direction === 'desc' ? -comparison : comparison;
+    });
+  }, [npcSearch, npcSort, npcs]);
+
+  const toggleNpcColumn = (key) => {
+    setNpcVisibleColumns((current) => current.includes(key)
+      ? (current.length > 1 ? current.filter((column) => column !== key) : current)
+      : [...current, key]);
+  };
+
+  const sortNpcColumn = (key) => {
+    setNpcSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
 
 
   // Define a function to fetch players
@@ -747,23 +827,19 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
 
   const TOOL_GROUPS = [
     {
-      title: 'Create',
+      title: 'Prepare',
       items: [
         {
           id: 'lootBoxes',
           label: 'Loot Boxes',
           description: 'Create, inspect, edit, and assign saved loot packages.',
           icon: <Inventory2Icon fontSize="small" />,
-          actionLabel: 'Create Loot Box',
-          action: handleCreateLootBox,
         },
         {
           id: 'npcCards',
           label: 'NPC Library',
           description: 'Create and manage saved NPC cards for this campaign.',
           icon: <BadgeIcon fontSize="small" />,
-          actionLabel: 'Create NPC',
-          action: handleCreateNpc,
         },
         {
           id: 'encounterBuilder',
@@ -773,22 +849,22 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
           actionLabel: encounterStarted ? 'Next Turn' : 'Begin Encounter',
           action: encounterStarted ? handleNextButtonClick : beginEncounter,
         },
+        {
+          id: 'campaignSettings',
+          label: 'Campaign Settings',
+          description: 'Install campaign modules and reconcile shared world settings.',
+          icon: <SettingsIcon fontSize="small" />,
+        },
       ],
     },
     {
-      title: 'Manage',
+      title: 'Run',
       items: [
         {
           id: 'soundPlayer',
           label: 'Music Player',
           description: 'Mix looping ambience and music with independent one-shot sound effects.',
           icon: <MusicNoteIcon fontSize="small" />,
-        },
-        {
-          id: 'campaignSettings',
-          label: 'Campaign Settings',
-          description: 'Install campaign modules and reconcile shared world settings.',
-          icon: <SettingsIcon fontSize="small" />,
         },
         {
           id: 'playerInventories',
@@ -806,11 +882,6 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
           actionLabel: 'Refresh History',
           action: fetchItemTransfers,
         },
-      ],
-    },
-    {
-      title: 'Roll / Randomize',
-      items: [
         {
           id: 'randomTables',
           label: 'Random Tables',
@@ -821,8 +892,8 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
         },
         {
           id: 'initiative',
-          label: 'Initiative',
-          description: 'Collect initiative rolls and track turn order.',
+          label: 'Enter Combat',
+          description: 'Collect initiative rolls, establish turn order, and enter combat.',
           icon: <SportsKabaddiIcon fontSize="small" />,
           actionLabel: 'Roll for Initiative',
           action: handleInitiative,
@@ -894,7 +965,7 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
 
         <button className="dmtools-dashboard-card" onClick={handleInitiative}>
           <div className="dmtools-dashboard-card-icon"><SportsKabaddiIcon /></div>
-          <div className="dmtools-dashboard-card-title">Start Initiative</div>
+          <div className="dmtools-dashboard-card-title">Enter Combat</div>
           <div className="dmtools-dashboard-card-text">
             Prompt players to roll and begin turn tracking.
           </div>
@@ -1083,29 +1154,62 @@ function DMTools({ headers, socket, characterName, accountType, onSoundWorkspace
         <Button onClick={handleCreateNpc}>Create NPC</Button>
       </div>
 
+      <div className="dmtools-library-controls">
+        <Form.Control
+          type="search"
+          aria-label="Search NPC library"
+          placeholder="Search names, types, traits, languages…"
+          value={npcSearch}
+          onChange={(event) => setNpcSearch(event.target.value)}
+        />
+        <details className="dmtools-column-picker">
+          <summary>Columns ({npcVisibleColumns.length})</summary>
+          <div>
+            {NPC_COLUMNS.map((column) => (
+              <label key={column.key}>
+                <input
+                  type="checkbox"
+                  checked={npcVisibleColumns.includes(column.key)}
+                  onChange={() => toggleNpcColumn(column.key)}
+                />
+                {column.label}
+              </label>
+            ))}
+          </div>
+        </details>
+      </div>
+
       <div className="dmtools-table-shell">
         <Table striped bordered hover className="dmtools-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>CR</th>
-              <th>AC</th>
-              <th>HP</th>
+              {NPC_COLUMNS.filter((column) => npcVisibleColumns.includes(column.key)).map((column) => (
+                <th key={column.key}>
+                  <button
+                    type="button"
+                    className={`dmtools-sort-header${npcSort.key === column.key ? ' is-active' : ''}`}
+                    onClick={() => sortNpcColumn(column.key)}
+                    aria-label={`Sort NPCs by ${column.label}`}
+                  >
+                    {column.label}
+                    {npcSort.key === column.key && <span aria-hidden="true">{npcSort.direction === 'asc' ? '▲' : '▼'}</span>}
+                  </button>
+                </th>
+              ))}
               <th style={{ width: '180px' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {npcs.length === 0 ? (
+            {displayedNpcs.length === 0 ? (
               <tr>
-                <td colSpan={5} className="dmtools-empty-cell">No NPCs saved yet.</td>
+                <td colSpan={npcVisibleColumns.length + 1} className="dmtools-empty-cell">{npcs.length ? 'No NPCs match that search.' : 'No NPCs saved yet.'}</td>
               </tr>
             ) : (
-              npcs.map((npc, i) => (
-                <tr key={i}>
-                  <td>{npc.name}</td>
-                  <td>{npc.challenge}</td>
-                  <td>{npc.ac}</td>
-                  <td>{npc.hp}</td>
+              displayedNpcs.map((npc) => (
+                <tr key={npc.id}>
+                  {NPC_COLUMNS.filter((column) => npcVisibleColumns.includes(column.key)).map((column) => (
+                    <td key={column.key}>{npc[column.key] ?? '—'}</td>
+                  ))}
                   <td>
                     <Button variant="primary" size="sm" onClick={() => handleNpcClick(npc)}>
                       View Actions

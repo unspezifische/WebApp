@@ -123,6 +123,8 @@ test('a shared session entering through a settlement URL returns to the map with
   expect(window.location.pathname).toBe('/settlementManager');
   expect(localStorage.getItem('token')).toBe('shared-token');
   expect(screen.queryByText('Campaign picker')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('DM sound player')).not.toBeInTheDocument();
+  expect(axios.get).not.toHaveBeenCalledWith('/api/sounds', expect.anything());
 });
 
 test('credential login preserves an explicit map campaign entry', async () => {

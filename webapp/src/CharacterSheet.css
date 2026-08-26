@@ -147,6 +147,37 @@
   font-size: 1.7rem !important;
 }
 
+.character-avatar-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 0.6rem;
+}
+
+.character-avatar-presets button {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.35rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.65rem;
+  background: transparent;
+  color: inherit;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.character-avatar-presets button:hover,
+.character-avatar-presets button.selected {
+  border-color: #b58a3a;
+  background: rgba(181, 138, 58, 0.15);
+}
+
+.character-avatar-presets img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 0.45rem;
+}
+
 .identity-modal-preview-text {
   min-width: 0;
 }

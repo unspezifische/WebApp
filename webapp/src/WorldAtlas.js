@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import AddIcon from '@mui/icons-material/Add';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import PublicIcon from '@mui/icons-material/Public';
+import AtlasViewport from './AtlasViewport';
 import './SettlementManager.css';
 
 const TYPES = ['hamlet', 'village', 'town', 'city', 'fortress', 'port', 'ruin', 'other'];
@@ -59,6 +60,9 @@ export default function WorldAtlas({ headers, socket }) {
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('Loading World Atlas…');
+  const [atlasUpload, setAtlasUpload] = useState({ file: null, attribution: '' });
+  const [movingId, setMovingId] = useState(null);
+  const [showAtlasUpload, setShowAtlasUpload] = useState(false);
 
   const load = useCallback(async () => {
     if (!campaignId) return;
@@ -72,8 +76,8 @@ export default function WorldAtlas({ headers, socket }) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (!socket) return undefined; const update = (event) => { const location = event?.settlement; if (!location || location.campaign_id !== Number(campaignId)) return; setAtlas((value) => ({ ...value, locations: event.action === 'deleted' ? value.locations.filter((item) => item.id !== location.id) : [...value.locations.filter((item) => item.id !== location.id), location] })); }; socket.on('world_atlas_updated', update); return () => socket.off('world_atlas_updated', update); }, [socket, campaignId]);
 
-  const selected = useMemo(() => atlas.locations.find((item) => item.id === selectedId), [atlas.locations, selectedId]);
   const patchLocation = async (location, changes) => { try { const response = await axios.patch(`/api/world-atlas/${campaignId}/settlements/${location.id}`, changes, { headers }); setAtlas((value) => ({ ...value, locations: value.locations.map((item) => item.id === location.id ? response.data : item) })); return response.data; } catch (error) { setStatus(error.response?.data?.message || 'Unable to update settlement'); return null; } };
+  const uploadAtlasImage = async (event) => { event.preventDefault(); if (!atlasUpload.file) return; const formElement = event.currentTarget; const form = new FormData(); form.append('file', atlasUpload.file); form.append('name', atlas.atlas?.name || 'Faerûn'); form.append('attribution', atlasUpload.attribution); setStatus('Uploading atlas to PostgreSQL…'); try { const response = await axios.post(`/api/world-atlas/${campaignId}/image`, form, { headers }); setAtlas((value) => ({ ...value, atlas: response.data })); setAtlasUpload({ file: null, attribution: '' }); setStatus('Atlas image stored in the campaign database.'); formElement.reset(); } catch (error) { setStatus(error.response?.data?.message || 'Unable to upload atlas image'); } };
 
   const createSettlement = async () => {
     if (!draft.name.trim()) return;
@@ -87,11 +91,10 @@ export default function WorldAtlas({ headers, socket }) {
     } catch (error) { setStatus(error.response?.data?.message || 'Unable to generate settlement'); } finally { setBusy(false); }
   };
 
-  const place = async (event) => {
-    if (event.target.closest('.atlas-marker')) return;
-    const bounds = event.currentTarget.getBoundingClientRect(); const atlas_x = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)); const atlas_y = Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height));
+  const place = async (atlas_x, atlas_y) => {
     if (workflowOpen) { setDraft((value) => ({ ...value, atlas_x, atlas_y })); setStatus('New settlement location selected.'); return; }
-    if (selected && await patchLocation(selected, { atlas_x, atlas_y })) setStatus(`${selected.name} placed on the overworld.`);
+    const moving = atlas.locations.find((item) => item.id === movingId);
+    if (moving && await patchLocation(moving, { atlas_x, atlas_y })) { setStatus(`${moving.name} moved on the overworld.`); setMovingId(null); }
   };
 
   const remove = async (location) => { if (!window.confirm(`Permanently delete ${location.name}? Use “Destroy” if the settlement was lost during the story.`)) return; try { const response = await axios.delete(`/api/world-atlas/${campaignId}/settlements/${location.id}?reason=mistake`, { headers }); setAtlas((value) => { const remaining = value.locations.filter((item) => item.id !== location.id); const replacement = response.data.active_settlement; return { ...value, locations: remaining.length || !replacement ? remaining : [replacement] }; }); setSelectedId(response.data.active_settlement?.id || null); setStatus(`${location.name} deleted.`); } catch (error) { setStatus(error.response?.data?.message || 'Unable to delete settlement'); } };
@@ -102,15 +105,13 @@ export default function WorldAtlas({ headers, socket }) {
     <header className="atlas-page-header"><div><span>CAMPAIGN CARTOGRAPHY</span><h1>World Atlas</h1><p>Generate settlements from their place in the world, or preserve destroyed places as part of its history.</p></div><strong>{atlas.locations.length} settlements</strong></header>
     <div className="world-atlas standalone">
       <section className="atlas-stage"><div className="atlas-heading"><div><span>OVERWORLD</span><h3>{atlas.atlas?.name || 'Campaign World'}</h3></div>{atlas.atlas?.source_url && <a href={atlas.atlas.source_url} target="_blank" rel="noreferrer">Open reference atlas ↗</a>}</div>
-        <div className={`atlas-map ${workflowOpen ? 'placing-new' : ''}`} style={atlas.atlas?.image_url ? { backgroundImage: `url(${atlas.atlas.image_url})` } : undefined} onClick={place} role="application" aria-label="Overworld settlement placement map">
-          {!atlas.atlas?.image_url && <div className="atlas-empty"><PublicIcon/><strong>{atlas.atlas?.name || 'Campaign World'}</strong><span>{workflowOpen ? 'Click a location for the new settlement.' : 'Select a settlement, then click anywhere to place or move it.'}</span></div>}
-          {atlas.locations.filter((item) => item.placed).map((item) => <button key={item.id} className={`atlas-marker ${item.id === selectedId ? 'active' : ''} ${item.status}`} style={{ left: `${item.atlas_x * 100}%`, top: `${item.atlas_y * 100}%` }} onClick={(event) => { event.stopPropagation(); setSelectedId(item.id); }}><i/><span>{item.name}{item.status === 'destroyed' ? ' · Destroyed' : ''}</span></button>)}
-          {workflowOpen && draft.atlas_x != null && <div className="atlas-draft-marker" style={{ left: `${draft.atlas_x * 100}%`, top: `${draft.atlas_y * 100}%` }}><i/><span>{draft.name || 'New settlement'}</span></div>}
-        </div><small className="atlas-help">Coordinates and environmental context are stored with each settlement, so its generated history and map remain reproducible.</small>
+        <AtlasViewport atlas={atlas.atlas} locations={atlas.locations} selectedId={movingId || selectedId} onSelect={setSelectedId} onPlace={place} placementEnabled={workflowOpen || movingId != null} draftMarker={workflowOpen ? draft : null}/><small className="atlas-help">{movingId ? `Click the atlas to set ${atlas.locations.find((item) => item.id === movingId)?.name}'s new position.` : 'Wheel to zoom and drag to pan without leaving this page. Settlement coordinates remain stable as you navigate.'}</small>
       </section>
       <aside className="atlas-list"><div><span>SETTLEMENTS</span><strong>{atlas.locations.length}</strong></div>
+        {(!atlas.atlas?.image_url || showAtlasUpload) && <form className="atlas-image-upload" onSubmit={async (event) => { await uploadAtlasImage(event); setShowAtlasUpload(false); }}><strong>World atlas image</strong><small>Upload a map you are permitted to use for this private campaign.</small><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setAtlasUpload((value) => ({ ...value, file: event.target.files?.[0] || null }))}/><input value={atlasUpload.attribution} onChange={(event) => setAtlasUpload((value) => ({ ...value, attribution: event.target.value }))} placeholder="Attribution or source note (optional)"/><button type="submit" disabled={!atlasUpload.file}>Store atlas</button></form>}
+        {atlas.atlas?.image_url && !showAtlasUpload && <button type="button" className="atlas-replace-image" onClick={() => setShowAtlasUpload(true)}>Replace world atlas image</button>}
         <button type="button" className="generate-settlement-button" onClick={openWorkflow}><AddIcon/><span><strong>New settlement</strong><small>Generate from world context</small></span></button>
-        <div className="atlas-location-list">{atlas.locations.map((item) => <article key={item.id} className={`${item.id === selectedId ? 'active' : ''} ${item.status}`}><button className="atlas-open" onClick={() => setSelectedId(item.id)}><strong>{item.name}</strong><small>{item.settlement_type} · {item.population == null ? 'unknown population' : `${item.population.toLocaleString()} people`} · {item.placed ? `${Math.round(item.atlas_x * 100)}%, ${Math.round(item.atlas_y * 100)}%` : 'Not placed'}</small>{item.environment?.biome && <small>{item.environment.biome}{item.generation_config?.generator && item.generation_config.generator !== 'blank-canvas' ? ' · generated' : ''}</small>}</button><div className="atlas-item-actions">{item.placed && <button onClick={() => patchLocation(item, { atlas_x: null, atlas_y: null })}>Unplace</button>}<button onClick={() => patchLocation(item, { status: item.status === 'destroyed' ? 'active' : 'destroyed' })}>{item.status === 'destroyed' ? 'Restore' : 'Destroy'}</button><button className="atlas-delete" onClick={() => remove(item)} title={`Permanently delete ${item.name}`}><DeleteOutlineIcon/></button></div></article>)}</div>
+        <div className="atlas-location-list">{atlas.locations.map((item) => <article key={item.id} className={`${item.id === (movingId || selectedId) ? 'active' : ''} ${item.status}`}><button className="atlas-open" onClick={() => setSelectedId(item.id)}><strong>{item.name}</strong><small>{item.settlement_type} · {item.population == null ? 'unknown population' : `${item.population.toLocaleString()} people`} · {item.placed ? `${Math.round(item.atlas_x * 100)}%, ${Math.round(item.atlas_y * 100)}%` : 'Not placed'}</small>{item.environment?.biome && <small>{item.environment.biome}{item.generation_config?.generator && item.generation_config.generator !== 'blank-canvas' ? ' · generated' : ''}</small>}</button><div className="atlas-item-actions"><button onClick={() => { setMovingId(item.id); setSelectedId(item.id); setStatus(`Click the atlas to move ${item.name}.`); }}>Move</button>{item.placed && <button onClick={() => patchLocation(item, { atlas_x: null, atlas_y: null })}>Unplace</button>}<button onClick={() => patchLocation(item, { status: item.status === 'destroyed' ? 'active' : 'destroyed' })}>{item.status === 'destroyed' ? 'Restore' : 'Destroy'}</button><button className="atlas-delete" onClick={() => remove(item)} title={`Permanently delete ${item.name}`}><DeleteOutlineIcon/></button></div></article>)}</div>
         <small className="atlas-status" role="status">{status}</small>
       </aside>
     </div>

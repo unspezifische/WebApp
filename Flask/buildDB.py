@@ -75,6 +75,7 @@ class Campaign(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     system = db.Column(db.String(50), nullable=False)
+    ruleset = db.Column(db.String(30))
     description = db.Column(db.Text)
     owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     dm_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)

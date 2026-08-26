@@ -109,7 +109,7 @@ for campaign in campaigns:
         print(f"Campaign '{campaign.name}' already has a calendar")
         continue
 
-    if campaign.system == "D&D 5e" and "harptos" in seeded_formats:
+    if campaign.rules_system == "D&D 5e" and "harptos" in seeded_formats:
         format_element = seeded_formats["harptos"]
         format_slug = "harptos"
         calendar_name = f"{campaign.name} In-World Calendar"

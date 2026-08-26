@@ -50,6 +50,7 @@ class ModuleTemplateTest(unittest.TestCase):
         module = module_catalog()[0]
         self.assertEqual(module["starting_year"], 1492)
         self.assertEqual(module["calendar"]["slug"], "harptos")
+        self.assertGreaterEqual(module["npc_count"], 35)
         self.assertNotIn("filename", module["calendar"])
 
 

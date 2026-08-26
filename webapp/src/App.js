@@ -79,12 +79,22 @@ function SoundPlayerCornerBar({ workspaceActive, onOpen }) {
 
   return (
     <DMSoundPlayerBar
+      hidden={fullPlayerVisible}
       quickFxConfigurable={fullPlayerVisible}
       onExpand={() => {
         onOpen();
         navigate('/dmTools');
       }}
     />
+  );
+}
+
+function CampaignSoundProvider({ headers, socket, enabled, children }) {
+  const location = useLocation();
+  return (
+    <DMSoundPlayerProvider headers={headers} socket={socket} enabled={enabled && !isSettlementPath(location.pathname)}>
+      {children}
+    </DMSoundPlayerProvider>
   );
 }
 
@@ -187,6 +197,25 @@ function App() {
   }, [selectedCampaign, accountType, characterName]);
 
   useEffect(() => {
+    const updateSelectedCampaign = (event) => {
+      const campaign = event.detail;
+      if (!campaign?.id) return;
+      setSelectedCampaign(current => current?.id === campaign.id ? {
+        ...current,
+        name: campaign.name ?? current.name,
+        ruleset: campaign.ruleset,
+        rulesSystem: campaign.rules_system,
+      } : current);
+    };
+    window.addEventListener('campaign-updated', updateSelectedCampaign);
+    window.addEventListener('campaign-ruleset-updated', updateSelectedCampaign);
+    return () => {
+      window.removeEventListener('campaign-updated', updateSelectedCampaign);
+      window.removeEventListener('campaign-ruleset-updated', updateSelectedCampaign);
+    };
+  }, []);
+
+  useEffect(() => {
     if (selectedCampaign.id && accountType === 'Player') {
       axios.get(`/api/character`, { headers })
         .then((res) => {
@@ -205,6 +234,7 @@ function App() {
     username,
     characterID,
     campaignID: selectedCampaign.id,
+    ...(selectedCampaign.rulesSystem ? { System: selectedCampaign.rulesSystem } : {}),
   }), [token, userID, username, selectedCampaign, characterID]);
 
   useEffect(() => {
@@ -422,7 +452,7 @@ function App() {
         {isLoggedIn ? (
           selectedCampaign.id ? (
             <Container fluid className="app-shell">
-              <DMSoundPlayerProvider headers={headers} socket={socketRef.current} enabled={accountType === 'DM'}>
+              <CampaignSoundProvider headers={headers} socket={socketRef.current} enabled={accountType === 'DM'}>
               <CampaignLayout
                 menuProps={{
                   headers,
@@ -467,10 +497,12 @@ function App() {
               </CampaignLayout>
 
               {accountType === 'DM' && (
-                <SoundPlayerCornerBar
-                  workspaceActive={soundWorkspaceActive}
-                  onOpen={() => setSoundPlayerOpenRequest((requestNumber) => requestNumber + 1)}
-                />
+                <HideOnSettlementRoutes>
+                  <SoundPlayerCornerBar
+                    workspaceActive={soundWorkspaceActive}
+                    onOpen={() => setSoundPlayerOpenRequest((requestNumber) => requestNumber + 1)}
+                  />
+                </HideOnSettlementRoutes>
               )}
 
               {/* Chat FAB and Modal */}
@@ -520,7 +552,7 @@ function App() {
                   )}
                 </Modal.Body>
               </Modal>
-              </DMSoundPlayerProvider>
+              </CampaignSoundProvider>
             </Container>
           ) : (
             <Routes>

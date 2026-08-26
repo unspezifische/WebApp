@@ -127,7 +127,7 @@ printf 'Nginx names: %s, app.%s, tools.%s, mtg.%s, maps.%s\n' \
 
 echo "==> 1) Install base packages"
 ssh -tt "$DESTINATION" "sudo apt update && sudo apt install -y \
-  nginx curl rsync python3-venv python3-pip python3-dev build-essential pkg-config \
+  nginx curl rsync ffmpeg python3-venv python3-pip python3-dev build-essential pkg-config \
   libpq-dev libssl-dev libffi-dev python3-setuptools \
   cargo rustc \
   postgresql postgresql-contrib \

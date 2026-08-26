@@ -99,8 +99,39 @@ export function terrainHeightAt(strokes, x, y, heightmap = null) {
     const distance = Math.hypot(x - Number(stroke.x), y - Number(stroke.y));
     if (distance >= radius) return height;
     const normalized = 1 - (distance / radius) ** 2;
-    return height + Number(stroke.delta || 0) * normalized * normalized;
+    const falloff=normalized*normalized;
+    if(stroke.mode==='flatten'||stroke.mode==='smooth'){
+      const target=Number(stroke.target_elevation_feet);
+      const amount=Math.max(0,Math.min(1,Number(stroke.amount)||0))*falloff;
+      return Number.isFinite(target)?height+(target-height)*amount:height;
+    }
+    return height + Number(stroke.delta || 0) * falloff;
   }, heightmapHeightAt(heightmap,x,y));
+}
+
+export function createTerrainHeightSampler(strokes, heightmap = null, cellSizeFeet = 160) {
+  const cellSize=Math.max(16,Number(cellSizeFeet)||160),buckets=new Map();
+  (strokes||[]).forEach((stroke)=>{
+    const radius=Math.max(1,Number(stroke.radius)||1),x=Number(stroke.x),y=Number(stroke.y);
+    const minColumn=Math.floor((x-radius)/cellSize),maxColumn=Math.floor((x+radius)/cellSize);
+    const minRow=Math.floor((y-radius)/cellSize),maxRow=Math.floor((y+radius)/cellSize);
+    for(let row=minRow;row<=maxRow;row+=1){for(let column=minColumn;column<=maxColumn;column+=1){
+      const key=`${column}:${row}`,bucket=buckets.get(key)||[];bucket.push(stroke);buckets.set(key,bucket);
+    }}
+  });
+  return (x,y)=>{
+    const candidates=buckets.get(`${Math.floor(x/cellSize)}:${Math.floor(y/cellSize)}`)||[];
+    return candidates.reduce((height,stroke)=>{
+      const radius=Math.max(1,Number(stroke.radius)||1),distance=Math.hypot(x-Number(stroke.x),y-Number(stroke.y));
+      if(distance>=radius)return height;
+      const falloff=(1-(distance/radius)**2)**2;
+      if(stroke.mode==='flatten'||stroke.mode==='smooth'){
+        const target=Number(stroke.target_elevation_feet),amount=Math.max(0,Math.min(1,Number(stroke.amount)||0))*falloff;
+        return Number.isFinite(target)?height+(target-height)*amount:height;
+      }
+      return height+Number(stroke.delta||0)*falloff;
+    },heightmapHeightAt(heightmap,x,y));
+  };
 }
 
 export function terrainSurfaceWeights(elevationFeet, normalY = 1, settings = {}) {
@@ -125,6 +156,10 @@ export function waterFlowSpeed({width_feet=30,depth_feet=5,slope=0}={}) {
   return Math.max(.18,Math.min(3.5,.42*constriction+Math.max(0,Number(slope))*16));
 }
 
+export function waterDepthAtSeaLevel(terrainElevationFeet,seaLevelFeet=0){
+  return Number(seaLevelFeet)-Number(terrainElevationFeet);
+}
+
 function projectToSegment(point, start, end) {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -138,15 +173,63 @@ function projectToSegment(point, start, end) {
 export function nearestRoadPoint(point, roads) {
   let nearest = null;
   (roads || []).forEach((road) => {
-    (road.points || []).slice(0,-1).forEach((start,index) => {
-      const candidate = projectToSegment(point,start,road.points[index+1]);
+    const points=road.points||[],segmentCount=road.closed?points.length:Math.max(0,points.length-1);
+    Array.from({length:segmentCount},(_,index)=>index).forEach((index) => {
+      const start=points[index],end=points[(index+1)%points.length];
+      const candidate = projectToSegment(point,start,end);
       if (!nearest || candidate.distance < nearest.distance) {
-        const startWidth=Number(start.width_feet??road.width_feet)||30,endWidth=Number(road.points[index+1].width_feet??road.width_feet)||30;
+        const startWidth=Number(start.width_feet??road.width_feet)||30,endWidth=Number(end.width_feet??road.width_feet)||30;
         nearest = { ...candidate, road, segmentIndex:index, width_feet:startWidth+(endWidth-startWidth)*candidate.amount };
       }
     });
   });
   return nearest;
+}
+
+export function snapRegionBoundaryPoint(point,regions,roads,{regionId=null,pointIndex=null,tolerance=80,fortifications=[]}={}){
+  let best={x:Math.round(point.x),y:Math.round(point.y)},bestDistance=Number(tolerance)||80;
+  let neighboringVertexFound=false;
+  (regions||[]).forEach(region=>(region.points||[]).forEach((candidate)=>{
+    // An edited point may join a neighboring region, but must not collapse
+    // onto a different vertex in its own polygon.
+    if(region.id===regionId)return;
+    const distance=Math.hypot(candidate.x-point.x,candidate.y-point.y);
+    if(distance<=bestDistance){best={x:candidate.x,y:candidate.y};bestDistance=distance;neighboringVertexFound=true;}
+  }));
+  if(neighboringVertexFound)return best;
+  const wallHit=nearestRoadPoint(point,(fortifications||[]).filter(wall=>wall.visible!==false));
+  if(wallHit&&wallHit.distance<=tolerance)return{x:Math.round(wallHit.point.x),y:Math.round(wallHit.point.y)};
+  const roadHit=nearestRoadPoint(point,(roads||[]).filter(road=>road.visible!==false));
+  if(roadHit&&roadHit.distance<=bestDistance)best={x:Math.round(roadHit.point.x),y:Math.round(roadHit.point.y)};
+  return best;
+}
+
+export function snapRoadNetworkPoint(point,roads,{roadId=null,tolerance=80}={}){
+  let best={x:Math.round(point.x),y:Math.round(point.y),...(point.width_feet!=null?{width_feet:point.width_feet}:{})};
+  let bestDistance=Number(tolerance)||80;
+  (roads||[]).forEach(road=>{
+    if(road.id===roadId)return;
+    (road.points||[]).forEach(candidate=>{
+      const distance=Math.hypot(candidate.x-point.x,candidate.y-point.y);
+      if(distance<=bestDistance){
+        best={...best,x:candidate.x,y:candidate.y};
+        bestDistance=distance;
+      }
+    });
+  });
+  return best;
+}
+
+export function snapRoadSplineTranslation(points,roads,{roadId=null,tolerance=80}={}){
+  let offset=null,bestDistance=Number(tolerance)||80;
+  (points||[]).forEach(point=>(roads||[]).forEach(road=>{
+    if(road.id===roadId)return;
+    (road.points||[]).forEach(candidate=>{
+      const distance=Math.hypot(candidate.x-point.x,candidate.y-point.y);
+      if(distance<=bestDistance){offset={x:candidate.x-point.x,y:candidate.y-point.y};bestDistance=distance;}
+    });
+  }));
+  return(points||[]).map(point=>({...point,x:Math.round(point.x+(offset?.x||0)),y:Math.round(point.y+(offset?.y||0))}));
 }
 
 export function insertRoadControlPoint(road, point) {
@@ -172,6 +255,19 @@ export function insertRoadControlPoint(road, point) {
   });
   const controlPoint = { x:Math.round(nearestPoint.x), y:Math.round(nearestPoint.y), width_feet:Math.round(widthFeet) };
   return { ...road, points:[...points.slice(0, insertAt), controlPoint, ...points.slice(insertAt)] };
+}
+
+export function insertClosedBoundaryPoint(boundary, point) {
+  const points=boundary?.points||[];
+  if(points.length<3||!Number.isFinite(point?.x)||!Number.isFinite(point?.y))return boundary;
+  let insertAt=1,nearestDistance=Infinity;
+  points.forEach((start,index)=>{
+    const end=points[(index+1)%points.length];
+    const candidate=projectToSegment(point,start,end);
+    if(candidate.distance<nearestDistance){nearestDistance=candidate.distance;insertAt=index+1;}
+  });
+  const controlPoint={x:Math.round(point.x),y:Math.round(point.y)};
+  return{...boundary,points:[...points.slice(0,insertAt),controlPoint,...points.slice(insertAt)]};
 }
 
 export function roadWidthAt(road, amount) {

@@ -9,6 +9,7 @@ Group=www-data
 WorkingDirectory=/home/ijohnson/Kachhapa/Flask
 
 Environment="DATABASE_URL=postgresql://admin:admin@localhost:5432/db"
+Environment="TMPDIR=/home/ijohnson/Kachhapa/tmp"
 
 # Make sure the socket ends up group-readable/writeable
 UMask=0007

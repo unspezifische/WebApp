@@ -3,7 +3,7 @@ def resolve_system_from_request():
 
     Order of precedence:
     1) `System` header or `system` query param (explicit override).
-    2) `CampaignID` header -> look up campaign.system.
+    2) `CampaignID` header -> look up the campaign's effective rules system.
     If neither yields a system, returns (None, None) and leaves the caller to warn.
     """
     system_override = request.headers.get('System') or request.args.get('system')
@@ -14,7 +14,7 @@ def resolve_system_from_request():
     if campaign_id:
         campaign = Campaign.query.filter_by(id=campaign_id).first()
         if campaign:
-            return campaign.system, campaign
+            return campaign.rules_system, campaign
     return None, None
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask import render_template ## For rendering wiki pages
@@ -53,22 +53,36 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 import io
 import os
+import hashlib
+import mimetypes
+import base64
 import csv  ## For importing items from CSV
 import json ## For sending JSON data
 
 
 import logging ## For debug logging
 import traceback
+import shutil
+import subprocess
 
 from settlement_simulation import calculate_lamplighter_state
 from travel_planning import estimate_travel_options
 from economy_simulation import commodity_price, simulate_business_day, simulate_commodity_day
 from workforce_simulation import rebalance_workforce, choose_noble_investment
 from module_templates import campaign_module_template, module_catalog, module_definition
+from module_npcs import module_npc_presets
+from npc_generation import generated_npc, supported_generation_options
 from settlement_generation import BIOMES, GOVERNMENTS, RESOURCES, SETTLEMENT_PRESETS, generate_settlement
 
 import markdown
 from urllib.parse import unquote
+
+DND_RULESET_SYSTEMS = {
+    '3.5e': 'D&D 3.5e',
+    '4e': 'D&D 4e',
+    '5e': 'D&D 5e',
+    '5e (2024)': 'D&D 5e (2024)',
+}
 
 
 app = Flask(__name__)
@@ -280,7 +294,13 @@ class Character(db.Model):
             # Backward compatibility with any older saved values
             resolved_mode = 'image'
         elif mode == 'preset' and self.avatar_preset_key:
-            resolved_mode = 'preset'
+            preset = character_avatar_preset(self.avatar_preset_key)
+            if preset:
+                resolved_mode = 'preset'
+                image_url = preset['url']
+                full_image_url = preset['url']
+            else:
+                resolved_mode = 'initials'
         else:
             resolved_mode = 'initials'
 
@@ -347,7 +367,8 @@ class Character(db.Model):
 class Campaign(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    system = db.Column(db.String(50), nullable=False)    # e.g., 'D&D 5e', 'pathfinder'
+    system = db.Column(db.String(50), nullable=False)    # e.g., 'D&D', 'Pathfinder'
+    ruleset = db.Column(db.String(30))                   # e.g., '3.5e', '4e', '5e', '5e (2024)'
     icon = db.Column(db.String(120))  # icon filepath or name
     description = db.Column(db.Text)
     module = db.Column(db.String(160))
@@ -358,11 +379,22 @@ class Campaign(db.Model):
     owner = db.relationship('User', foreign_keys=[owner_id], backref='owned_campaigns')
     dm = db.relationship('User', foreign_keys=[dm_id], backref='dm_campaigns')
 
+    @property
+    def rules_system(self):
+        """Return the catalog key used for classes, races, and other rules data."""
+        if self.system == 'D&D 5e':  # Compatibility before/while the migration runs.
+            return 'D&D 5e'
+        if self.system == 'D&D':
+            return DND_RULESET_SYSTEMS.get(self.ruleset or '5e', 'D&D 5e')
+        return self.system
+
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
             'system': self.system,
+            'ruleset': self.ruleset,
+            'rules_system': self.rules_system,
             'description': self.description,
             'module': self.module,
             'icon': self.icon,
@@ -376,7 +408,7 @@ class Campaign(db.Model):
 
 class CampaignModuleInstallation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id', ondelete='CASCADE'), nullable=False, index=True)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id', ondelete='CASCADE'), nullable=True, index=True)
     module_key = db.Column(db.String(120), nullable=False)
     module_name = db.Column(db.String(160), nullable=False)
     setting_key = db.Column(db.String(80))
@@ -470,6 +502,7 @@ def seed_campaign_world(campaign):
     template = campaign_module_template(campaign.module, MEDIA_ROOT)
     if not template:
         return None
+    template = persist_reference_layer_media(campaign.id, template)
 
     location = WorldAtlasLocation(
         campaign_id=campaign.id,
@@ -477,6 +510,8 @@ def seed_campaign_world(campaign):
         map_key=template['map_key'],
         settlement_type=template['settlement_type'],
         notes=template.get('notes'),
+        atlas_x=template.get('atlas_x'),
+        atlas_y=template.get('atlas_y'),
         is_primary=True,
         terrain_strokes=template.get('terrain_strokes', []),
         roads=template.get('roads', []),
@@ -584,6 +619,67 @@ class WorldAtlasLocation(db.Model):
             'water_bodies': self.water_bodies or [], 'buildings': self.buildings or [],
             'reference_layers': self.reference_layers or [],
         }
+
+
+class MapMediaAsset(db.Model):
+    """Opaque, database-backed raster used by settlement maps and world atlases."""
+    __tablename__ = 'map_media_asset'
+    id = db.Column(db.Integer, primary_key=True)
+    public_id = db.Column(db.String(32), nullable=False, unique=True, index=True)
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id', ondelete='CASCADE'), nullable=False, index=True)
+    purpose = db.Column(db.String(40), nullable=False, default='map_reference')
+    name = db.Column(db.String(160), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False)
+    mimetype = db.Column(db.String(100), nullable=False)
+    byte_size = db.Column(db.Integer, nullable=False)
+    sha256 = db.Column(db.String(64), nullable=False)
+    pixel_width = db.Column(db.Integer)
+    pixel_height = db.Column(db.Integer)
+    data = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    @property
+    def content_url(self):
+        return f'/api/map-media/{self.public_id}'
+
+
+class CampaignWorldAtlas(db.Model):
+    """One canonical setting atlas per campaign; art lives in PostgreSQL."""
+    __tablename__ = 'campaign_world_atlas'
+    campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id', ondelete='CASCADE'), primary_key=True)
+    setting_key = db.Column(db.String(80), nullable=False, default='custom')
+    coordinate_space_key = db.Column(db.String(80), nullable=False, default='custom-v1')
+    name = db.Column(db.String(160), nullable=False, default='Campaign World')
+    image_asset_id = db.Column(db.Integer, db.ForeignKey('map_media_asset.id', ondelete='SET NULL'))
+    attribution = db.Column(db.Text)
+    source_name = db.Column(db.String(255))
+    updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    image_asset = db.relationship('MapMediaAsset', foreign_keys=[image_asset_id])
+
+    def to_dict(self):
+        return {
+            'key': self.setting_key,
+            'coordinate_space_key': self.coordinate_space_key,
+            'name': self.name,
+            'image_url': self.image_asset.content_url if self.image_asset else None,
+            'image_asset_id': self.image_asset_id,
+            'source_name': self.source_name,
+            'attribution': self.attribution or '',
+            'tile_url_template': None,
+        }
+
+
+class SettingWorldAtlas(db.Model):
+    """Server-wide licensed atlas default shared by modules in the same setting."""
+    __tablename__ = 'setting_world_atlas'
+    setting_key = db.Column(db.String(80), primary_key=True)
+    coordinate_space_key = db.Column(db.String(80), nullable=False)
+    name = db.Column(db.String(160), nullable=False)
+    image_asset_id = db.Column(db.Integer, db.ForeignKey('map_media_asset.id', ondelete='SET NULL'))
+    attribution = db.Column(db.Text)
+    source_name = db.Column(db.String(255))
+    updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    image_asset = db.relationship('MapMediaAsset', foreign_keys=[image_asset_id])
 class SettlementEconomyState(db.Model):
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id'), primary_key=True)
     day_index = db.Column(db.Integer, nullable=False, default=0)
@@ -1182,6 +1278,9 @@ class SoundAsset(db.Model):
     original_filename = db.Column(db.String(255), nullable=False)
     mimetype = db.Column(db.String(100), nullable=False)
     category = db.Column(db.String(20), nullable=False, default='music', server_default='music')
+    cover_filename = db.Column(db.String(255))
+    cover_mimetype = db.Column(db.String(100))
+    duration_seconds = db.Column(db.Float)
     uploaded_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     uploaded_by = db.relationship('User', backref='sound_assets')
@@ -1194,6 +1293,8 @@ class SoundAsset(db.Model):
             'mimetype': self.mimetype,
             'originalFilename': self.original_filename,
             'url': f'/media/sounds/{self.filename}',
+            'coverUrl': f'/media/sounds/covers/{self.cover_filename}' if self.cover_filename else None,
+            'durationSeconds': self.duration_seconds,
             'uploadedBy': self.uploaded_by.username if self.uploaded_by else None,
             'createdAt': self.created_at.isoformat() if self.created_at else None,
         }
@@ -1519,6 +1620,7 @@ def _merge_template_records(existing, incoming):
 
 def import_module_settlement(campaign, template, strategy):
     """Import, merge, retain, or replace a module settlement map."""
+    template = persist_reference_layer_media(campaign.id, template)
     locations = WorldAtlasLocation.query.filter_by(campaign_id=campaign.id).all()
     incoming_name = template['name'].strip().casefold()
     location = next(
@@ -1532,6 +1634,8 @@ def import_module_settlement(campaign, template, strategy):
             map_key=template['map_key'],
             settlement_type=template['settlement_type'],
             notes=template.get('notes'),
+            atlas_x=template.get('atlas_x'),
+            atlas_y=template.get('atlas_y'),
             is_primary=not locations,
             terrain_strokes=template.get('terrain_strokes', []),
             roads=template.get('roads', []),
@@ -1549,6 +1653,9 @@ def import_module_settlement(campaign, template, strategy):
         previous_map_key = location.map_key
         location.settlement_type = template['settlement_type']
         location.notes = template.get('notes')
+        if template.get('atlas_x') is not None:
+            location.atlas_x = template['atlas_x']
+            location.atlas_y = template.get('atlas_y')
         location.terrain_strokes = template.get('terrain_strokes', [])
         location.roads = template.get('roads', [])
         location.water_bodies = template.get('water_bodies', [])
@@ -1609,6 +1716,41 @@ def record_module_installation(campaign, definition, user_id, settlement_strateg
     return installation
 
 
+NPC_RECORD_FIELDS = {
+    'name', 'size', 'creature_type', 'creature_subtype', 'alignment', 'ac', 'hp',
+    'speed', 'strength', 'dexterity', 'constitution', 'intelligence', 'wisdom',
+    'charisma', 'saving_throws', 'skills', 'immunities', 'resistance', 'senses',
+    'languages', 'challenge', 'traits', 'actions', 'description',
+}
+
+
+def npc_from_record(campaign_id, record):
+    """Build an NPC model from either a generated or module preset record."""
+    values = {key: record.get(key) for key in NPC_RECORD_FIELDS}
+    return NPC(campaign_id=campaign_id, **values)
+
+
+def seed_module_npcs(campaign, definition):
+    """Merge a module's named NPCs into the campaign library by stable name."""
+    presets = module_npc_presets(definition.get('key'))
+    if not presets:
+        return []
+    existing_names = {
+        npc.name.strip().casefold()
+        for npc in NPC.query.filter_by(campaign_id=campaign.id).all()
+    }
+    added = []
+    for preset in presets:
+        normalized_name = preset['name'].strip().casefold()
+        if normalized_name in existing_names:
+            continue
+        npc = npc_from_record(campaign.id, preset)
+        db.session.add(npc)
+        added.append(npc)
+        existing_names.add(normalized_name)
+    return added
+
+
 ## Add all the models to the admin console
 admin.add_view(ModelView(User, db.session))
 admin.add_view(ModelView(Character, db.session))
@@ -1643,7 +1785,7 @@ import click
 from pathlib import Path
 from uuid import uuid4
 from werkzeug.utils import secure_filename
-from PIL import Image
+from PIL import Image, ImageOps
 
 # Large cartographic references are retained at source resolution. Viewer-safe
 # derivatives are generated after validation instead of rejecting useful maps.
@@ -1654,17 +1796,110 @@ MEDIA_ROOT = BASE_DIR / "media"
 AVATAR_ROOT = MEDIA_ROOT / "avatars"
 AVATAR_UPLOAD_ROOT = AVATAR_ROOT / "uploads"
 AVATAR_DEFAULT_ROOT = AVATAR_ROOT / "defaults"
+CAMPAIGN_ICON_ROOT = MEDIA_ROOT / "campaign-icons"
 MAP_REFERENCE_ROOT = MEDIA_ROOT / "maps"
 SOUND_ROOT = MEDIA_ROOT / "sounds"
 
 app.config["MEDIA_ROOT"] = str(MEDIA_ROOT)
 app.config["AVATAR_ROOT"] = str(AVATAR_ROOT)
 app.config["AVATAR_UPLOAD_ROOT"] = str(AVATAR_UPLOAD_ROOT)
-app.config["MAX_CONTENT_LENGTH"] = 61 * 1024 * 1024
+app.config["CAMPAIGN_ICON_ROOT"] = str(CAMPAIGN_ICON_ROOT)
 
+
+def store_map_media_asset(campaign_id, data, filename, mimetype=None, purpose='map_reference', name=None,
+                          pixel_width=None, pixel_height=None):
+    """Store map bytes once per campaign and return an opaque database URL."""
+    digest = hashlib.sha256(data).hexdigest()
+    existing = MapMediaAsset.query.filter_by(campaign_id=campaign_id, sha256=digest, purpose=purpose).first()
+    if existing:
+        return existing
+    asset = MapMediaAsset(
+        public_id=uuid4().hex, campaign_id=campaign_id, purpose=purpose,
+        name=(name or Path(filename).stem)[:160], original_filename=Path(filename).name[:255],
+        mimetype=(mimetype or mimetypes.guess_type(filename)[0] or 'application/octet-stream')[:100],
+        byte_size=len(data), sha256=digest, pixel_width=pixel_width, pixel_height=pixel_height, data=data,
+    )
+    db.session.add(asset)
+    db.session.flush()
+    return asset
+
+
+def persist_reference_layer_media(campaign_id, template):
+    """Copy packaged/legacy map rasters into PostgreSQL and rewrite their URLs."""
+    payload = json.loads(json.dumps(template))
+    for layer in payload.get('reference_layers', []):
+        for field in ('image_url', 'original_image_url', 'source_image_url'):
+            current = layer.get(field)
+            if not isinstance(current, str) or not current.startswith('/media/'):
+                continue
+            source_path = MEDIA_ROOT / current.removeprefix('/media/')
+            is_module_asset = '/modules/' in current
+            purpose = 'module_map' if is_module_asset else 'map_reference'
+            asset_campaign_id = None if is_module_asset else campaign_id
+            if source_path.is_file():
+                asset = store_map_media_asset(
+                    asset_campaign_id, source_path.read_bytes(), source_path.name, purpose=purpose,
+                    name=layer.get('name'), pixel_width=layer.get('pixel_width'), pixel_height=layer.get('pixel_height'),
+                )
+            else:
+                asset = MapMediaAsset.query.filter_by(
+                    campaign_id=asset_campaign_id, original_filename=source_path.name, purpose=purpose
+                ).first()
+                if not asset:
+                    app.logger.warning('Map media source is missing and could not be imported: %s', source_path)
+                    continue
+            layer[field] = asset.content_url
+            layer[f'{field}_asset_id'] = asset.id
+            if layer.get('layer_type') == 'heightmap' and not layer.get('values'):
+                try:
+                    with Image.open(io.BytesIO(asset.data)) as source:
+                        sampled = source.convert('L').resize((128, 128), Image.Resampling.LANCZOS)
+                        layer['values'] = list(sampled.tobytes())
+                        layer['grid_width'] = 128
+                        layer['grid_height'] = 128
+                except Exception:
+                    app.logger.exception('Unable to sample database-backed heightmap %s', asset.id)
+    return payload
 ALLOWED_AVATAR_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 ALLOWED_MAP_REFERENCE_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 ALLOWED_SOUND_EXTENSIONS = {"mp3", "wav", "ogg", "m4a", "aac", "webm", "flac"}
+MAX_SOUND_UPLOAD_BYTES = 1024 * 1024 * 1024
+LOSSLESS_SOUND_EXTENSIONS = {'wav', 'flac'}
+
+CHARACTER_AVATAR_PRESETS = [
+    {'key': 'barbarian', 'name': 'Barbarian', 'url': '/avatars/barbarian.webp'},
+    {'key': 'bard', 'name': 'Bard', 'url': '/avatars/bard.webp'},
+    {'key': 'cleric', 'name': 'Cleric', 'url': '/avatars/clerid.webp'},
+    {'key': 'druid', 'name': 'Druid', 'url': '/avatars/druid.webp'},
+    {'key': 'fighter', 'name': 'Fighter', 'url': '/avatars/fighter.webp'},
+    {'key': 'knight', 'name': 'Knight', 'url': '/avatars/knight.webp'},
+    {'key': 'monk', 'name': 'Monk', 'url': '/avatars/monk.webp'},
+    {'key': 'paladin', 'name': 'Paladin', 'url': '/avatars/paladin.webp'},
+    {'key': 'ranger', 'name': 'Ranger', 'url': '/avatars/ranger.webp'},
+    {'key': 'rogue', 'name': 'Rogue', 'url': '/avatars/rogue.webp'},
+    {'key': 'sorcerer', 'name': 'Sorcerer', 'url': '/avatars/sorcerer.webp'},
+    {'key': 'warlock', 'name': 'Warlock', 'url': '/avatars/warlock.webp'},
+    {'key': 'wizard', 'name': 'Wizard', 'url': '/avatars/wizard.webp'},
+]
+
+CAMPAIGN_ICON_PRESETS = [
+    {'key': 'world-turtle', 'name': 'World Turtle', 'url': '/sea_turtle_icon_512.png'},
+    {'key': 'neverwinter', 'name': 'Neverwinter', 'url': '/Neverwinter.png'},
+    {'key': 'dungeon-master', 'name': 'Dungeon Master', 'url': '/avatars/DM.webp'},
+    {'key': 'knight', 'name': 'Knight', 'url': '/avatars/knight.webp'},
+    {'key': 'wizard', 'name': 'Wizard', 'url': '/avatars/wizard.webp'},
+    {'key': 'rogue', 'name': 'Rogue', 'url': '/avatars/rogue.webp'},
+    {'key': 'druid', 'name': 'Druid', 'url': '/avatars/druid.webp'},
+    {'key': 'bard', 'name': 'Bard', 'url': '/avatars/bard.webp'},
+]
+
+
+def character_avatar_preset(key):
+    return next((preset for preset in CHARACTER_AVATAR_PRESETS if preset['key'] == key), None)
+
+
+def campaign_icon_preset(key):
+    return next((preset for preset in CAMPAIGN_ICON_PRESETS if preset['key'] == key), None)
 
 def allowed_avatar_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_AVATAR_EXTENSIONS
@@ -1713,6 +1948,117 @@ def serialized_quick_effect_slots(campaign_id):
     return [configured.get(slot, {'slot': slot, 'sound': None}) for slot in range(1, 6)]
 
 
+def sound_upload_error(message, code, status, filename=None):
+    """Return a safe, machine-readable upload error for per-file UI feedback."""
+    error = {'code': code}
+    if filename:
+        error['filename'] = secure_filename(filename)
+    return jsonify({'message': message, 'error': error}), status
+
+
+def extract_embedded_sound_cover(sound_path):
+    """Return normalized embedded cover art when the audio container provides it."""
+    try:
+        from mutagen import File as MutagenFile
+        from mutagen.flac import Picture
+        from mutagen.id3 import APIC, ID3
+
+        try:
+            audio = MutagenFile(sound_path)
+        except Exception:
+            audio = None
+        candidates = []
+        candidates.extend(getattr(audio, 'pictures', []) or [])
+        tags = getattr(audio, 'tags', None)
+        if not tags and Path(sound_path).suffix.lower() == '.mp3':
+            try:
+                tags = ID3(sound_path)
+            except Exception:
+                tags = None
+        if tags:
+            candidates.extend(value for value in tags.values() if isinstance(value, APIC))
+            covers = tags.get('covr') if hasattr(tags, 'get') else None
+            if covers:
+                candidates.extend(covers if isinstance(covers, (list, tuple)) else [covers])
+            encoded_pictures = tags.get('metadata_block_picture') if hasattr(tags, 'get') else None
+            for encoded in encoded_pictures or []:
+                try:
+                    picture = Picture(base64.b64decode(encoded))
+                    candidates.append(picture)
+                except Exception:
+                    continue
+        for candidate in candidates:
+            image_bytes = bytes(getattr(candidate, 'data', candidate))
+            if not image_bytes or len(image_bytes) > 15 * 1024 * 1024:
+                continue
+            try:
+                with Image.open(io.BytesIO(image_bytes)) as cover:
+                    cover.load()
+                    cover.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
+                    has_alpha = cover.mode in {'RGBA', 'LA'} or 'transparency' in cover.info
+                    output = io.BytesIO()
+                    if has_alpha:
+                        cover.convert('RGBA').save(output, 'PNG', optimize=True)
+                        return output.getvalue(), 'png', 'image/png'
+                    cover.convert('RGB').save(output, 'JPEG', quality=90, optimize=True)
+                    return output.getvalue(), 'jpg', 'image/jpeg'
+            except Exception:
+                continue
+    except Exception:
+        app.logger.info('No readable embedded cover art in %s', sound_path, exc_info=True)
+    return None
+
+
+def sound_duration_seconds(sound_path):
+    """Read a track's duration without decoding the complete audio file."""
+    try:
+        from mutagen import File as MutagenFile
+        audio = MutagenFile(sound_path)
+        duration = float(getattr(getattr(audio, 'info', None), 'length', 0) or 0)
+        return round(duration, 3) if duration > 0 else None
+    except Exception:
+        app.logger.info('No readable duration metadata in %s', sound_path, exc_info=True)
+        return None
+
+
+class SoundTranscodeError(RuntimeError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def transcode_sound_to_mp3(source_path, destination_path):
+    """Convert a lossless upload to a compact, browser-streamable MP3."""
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        raise SoundTranscodeError(
+            'transcoder_unavailable',
+            'Audio compression is not installed on this server. Install ffmpeg and try again.',
+        )
+    # Audio imports are background preparation work from the user's point of
+    # view. Keep them from monopolizing a small Pi while maps and API requests
+    # are being served. `nice` is optional so local development remains
+    # portable; limiting ffmpeg to one worker is effective on every platform.
+    command = [
+        ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+        '-i', str(source_path), '-map_metadata', '0', '-vn',
+        '-codec:a', 'libmp3lame', '-b:a', '192k', '-threads', '1', str(destination_path),
+    ]
+    nice = shutil.which('nice')
+    if nice:
+        command = [nice, '-n', '10', *command]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=3600, check=False
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SoundTranscodeError('transcode_timeout', 'Audio compression took longer than one hour.') from error
+    if completed.returncode or not destination_path.is_file() or destination_path.stat().st_size == 0:
+        detail = (completed.stderr or '').strip().splitlines()
+        app.logger.warning('ffmpeg could not transcode %s: %s', source_path.name, detail[-1] if detail else 'unknown error')
+        raise SoundTranscodeError('transcode_failed', 'The server could not convert this audio file to MP3.')
+
+
 @app.route('/api/sounds', methods=['GET', 'POST'])
 @jwt_required()
 def sounds():
@@ -1722,50 +2068,119 @@ def sounds():
 
     if request.method == 'GET':
         assets = SoundAsset.query.order_by(SoundAsset.category, SoundAsset.name).all()
+        durations_updated = False
+        for asset in assets:
+            if asset.duration_seconds is None:
+                asset.duration_seconds = sound_duration_seconds(SOUND_ROOT / asset.filename)
+                durations_updated = durations_updated or asset.duration_seconds is not None
+        if durations_updated:
+            db.session.commit()
         return jsonify({'sounds': [asset.to_dict() for asset in assets]}), 200
 
     uploaded = request.files.get('file')
     if not uploaded or not uploaded.filename:
-        return jsonify({'message': 'Choose an audio file to upload'}), 400
-    if not allowed_sound_file(uploaded.filename) or not (uploaded.mimetype or '').startswith('audio/'):
-        return jsonify({'message': 'Sounds must be MP3, WAV, OGG, M4A, AAC, WebM, or FLAC audio'}), 400
+        return sound_upload_error('Choose an audio file to upload', 'missing_file', 400)
+    if not allowed_sound_file(uploaded.filename):
+        return sound_upload_error(
+            'Unsupported format. Choose MP3, WAV, OGG, M4A, AAC, WebM, or FLAC audio.',
+            'unsupported_format', 400, uploaded.filename,
+        )
+    mimetype = (uploaded.mimetype or '').lower()
+    if mimetype and not (mimetype.startswith('audio/') or mimetype in {'application/ogg', 'application/octet-stream'}):
+        return sound_upload_error(
+            f'The browser identified this file as {mimetype}, not audio.',
+            'invalid_mimetype', 400, uploaded.filename,
+        )
 
     uploaded.stream.seek(0, 2)
     uploaded_size = uploaded.stream.tell()
     uploaded.stream.seek(0)
-    if uploaded_size > 50 * 1024 * 1024:
-        return jsonify({'message': 'Sounds must be 50 MB or smaller'}), 413
+    if uploaded_size == 0:
+        return sound_upload_error('The selected audio file is empty.', 'empty_file', 400, uploaded.filename)
+    if uploaded_size > MAX_SOUND_UPLOAD_BYTES:
+        return sound_upload_error('The file is larger than the 1 GB upload limit.', 'file_too_large', 413, uploaded.filename)
 
     category = (request.form.get('category') or 'music').strip().lower()
     if category not in {'music', 'environment', 'sfx'}:
-        return jsonify({'message': 'Sound category must be music, environment, or sfx'}), 400
+        return sound_upload_error('Sound category must be music, environment, or sfx.', 'invalid_category', 400, uploaded.filename)
 
     original_name = secure_filename(uploaded.filename)
     extension = original_name.rsplit('.', 1)[1].lower()
     display_name = (request.form.get('name') or Path(original_name).stem).strip()[:120]
     if not display_name:
-        return jsonify({'message': 'A sound name is required'}), 400
+        return sound_upload_error('A sound name is required.', 'missing_name', 400, uploaded.filename)
 
     SOUND_ROOT.mkdir(parents=True, exist_ok=True)
-    stored_filename = f'{uuid4().hex}.{extension}'
+    should_transcode = extension in LOSSLESS_SOUND_EXTENSIONS
+    stored_extension = 'mp3' if should_transcode else extension
+    stored_mimetype = 'audio/mpeg' if should_transcode else uploaded.mimetype
+    stored_filename = f'{uuid4().hex}.{stored_extension}'
     stored_path = SOUND_ROOT / stored_filename
+    source_path = SOUND_ROOT / f'.{uuid4().hex}.upload.{extension}'
     try:
-        uploaded.save(stored_path)
-        asset = SoundAsset(
-            name=display_name,
-            filename=stored_filename,
-            original_filename=original_name,
-            mimetype=uploaded.mimetype,
-            category=category,
-            uploaded_by_id=user.id,
+        uploaded.save(source_path)
+    except (OSError, IOError):
+        source_path.unlink(missing_ok=True)
+        app.logger.exception('Unable to write uploaded sound %s', original_name)
+        return sound_upload_error(
+            'The server could not write this file to sound storage.',
+            'storage_error', 500, uploaded.filename,
         )
+
+    cover_filename = None
+    cover_mimetype = None
+    extracted_cover = extract_embedded_sound_cover(source_path)
+    try:
+        if should_transcode:
+            transcode_sound_to_mp3(source_path, stored_path)
+        else:
+            source_path.replace(stored_path)
+    except SoundTranscodeError as error:
+        stored_path.unlink(missing_ok=True)
+        return sound_upload_error(str(error), error.code, 422, uploaded.filename)
+    except (OSError, IOError):
+        stored_path.unlink(missing_ok=True)
+        app.logger.exception('Unable to finalize uploaded sound %s', original_name)
+        return sound_upload_error('The server could not finalize this audio file.', 'storage_error', 500, uploaded.filename)
+    finally:
+        source_path.unlink(missing_ok=True)
+
+    if extracted_cover:
+        cover_bytes, cover_extension, cover_mimetype = extracted_cover
+        cover_root = SOUND_ROOT / 'covers'
+        cover_root.mkdir(parents=True, exist_ok=True)
+        cover_filename = f'{uuid4().hex}.{cover_extension}'
+        try:
+            (cover_root / cover_filename).write_bytes(cover_bytes)
+        except (OSError, IOError):
+            cover_filename = None
+            cover_mimetype = None
+            app.logger.warning('Audio uploaded, but embedded cover art could not be stored for %s', original_name)
+
+    asset = SoundAsset(
+        name=display_name,
+        filename=stored_filename,
+        original_filename=original_name,
+        mimetype=stored_mimetype,
+        category=category,
+        cover_filename=cover_filename,
+        cover_mimetype=cover_mimetype,
+        duration_seconds=sound_duration_seconds(stored_path),
+        uploaded_by_id=user.id,
+    )
+    try:
         db.session.add(asset)
         db.session.commit()
     except Exception:
         db.session.rollback()
         stored_path.unlink(missing_ok=True)
-        app.logger.exception('Unable to save uploaded sound')
-        return jsonify({'message': 'The sound could not be saved'}), 500
+        if cover_filename:
+            (SOUND_ROOT / 'covers' / cover_filename).unlink(missing_ok=True)
+        app.logger.exception('Unable to record uploaded sound %s', original_name)
+        return sound_upload_error(
+            'The file reached the server, but its library record could not be saved.',
+            'database_error', 500, uploaded.filename,
+        )
 
     socketio.emit('sound_library_updated', {'action': 'created', 'sound': asset.to_dict()})
     return jsonify({'sound': asset.to_dict()}), 201
@@ -1947,6 +2362,18 @@ def make_avatar_thumbnail(src_path: Path, dst_path: Path, size=(128, 128)) -> No
         img = img.convert("RGBA")
         img.thumbnail(size)
         img.save(dst_path, format="WEBP", quality=88)
+
+
+def save_campaign_icon(uploaded, campaign_id: int) -> str:
+    destination = Path(app.config['CAMPAIGN_ICON_ROOT']) / str(campaign_id)
+    destination.mkdir(parents=True, exist_ok=True)
+    filename = f"campaign_{campaign_id}_{uuid4().hex}.webp"
+    output_path = destination / filename
+    with Image.open(uploaded.stream) as image:
+        image.load()
+        normalized = ImageOps.fit(image.convert('RGB'), (512, 512), method=Image.Resampling.LANCZOS)
+        normalized.save(output_path, format='WEBP', quality=90, method=6)
+    return f"/media/campaign-icons/{campaign_id}/{filename}"
 
 ######################################################################################
 @app.cli.command("set-all-users-offline")
@@ -2436,10 +2863,18 @@ def campaigns():
         user = User.query.filter_by(username=username).first()
         app.logger.debug("CAMPAIGN- user: %s", user.to_dict())
     
+        requested_system = str(data.get('system') or 'D&D').strip()
+        requested_ruleset = str(data.get('ruleset') or '5e').strip()
+        if requested_system == 'D&D 5e':
+            requested_system, requested_ruleset = 'D&D', '5e'
+        if requested_system == 'D&D' and requested_ruleset not in DND_RULESET_SYSTEMS:
+            return jsonify({'message': 'Choose a supported D&D ruleset'}), 400
+
         # Create a new campaign with all necessary values
         campaign = Campaign(
             name=data['name'],
-            system=data['system'],
+            system=requested_system,
+            ruleset=requested_ruleset if requested_system == 'D&D' else None,
             module=data.get('module'),
             owner_id=user.id,
             dm_id=user.id,
@@ -2465,6 +2900,7 @@ def campaigns():
         initial_definition = module_definition(data.get('module'))
         if initial_definition:
             ensure_module_calendar(campaign, initial_definition, strategy='use_module')
+            seed_module_npcs(campaign, initial_definition)
             record_module_installation(
                 campaign, initial_definition, user.id,
                 settlement_strategy='override', calendar_strategy='use_module',
@@ -2541,7 +2977,104 @@ def campaign_modules_payload(campaign):
             'current_month_index': calendar.current_month_index,
             'current_day': calendar.current_day,
         } if calendar else None),
+        'profile_icon_presets': CAMPAIGN_ICON_PRESETS,
     }
+
+
+@app.route('/api/profile-image-presets', methods=['GET'])
+@jwt_required()
+def get_profile_image_presets():
+    return jsonify({
+        'campaign_icons': CAMPAIGN_ICON_PRESETS,
+        'character_avatars': CHARACTER_AVATAR_PRESETS,
+    }), 200
+
+
+@app.route('/api/campaigns/<int:campaign_id>/ruleset', methods=['PATCH'])
+@jwt_required()
+def update_campaign_ruleset(campaign_id):
+    campaign = Campaign.query.get(campaign_id)
+    if not campaign:
+        return jsonify({'message': 'Campaign not found'}), 404
+    if not user_can_edit_campaign(campaign):
+        return jsonify({'message': 'Only the campaign DM or owner may change its ruleset'}), 403
+
+    data = request.get_json(silent=True) or {}
+    ruleset = str(data.get('ruleset') or '').strip()
+    if ruleset not in DND_RULESET_SYSTEMS:
+        return jsonify({'message': 'Choose a supported D&D ruleset'}), 400
+
+    campaign.system = 'D&D'
+    campaign.ruleset = ruleset
+    db.session.commit()
+    return jsonify({'campaign': campaign.to_dict()}), 200
+
+
+@app.route('/api/campaigns/<int:campaign_id>/name', methods=['PATCH'])
+@jwt_required()
+def update_campaign_name(campaign_id):
+    campaign = Campaign.query.get(campaign_id)
+    if not campaign:
+        return jsonify({'message': 'Campaign not found'}), 404
+    if not user_can_edit_campaign(campaign):
+        return jsonify({'message': 'Only the campaign DM or owner may change its name'}), 403
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name') or '').strip()
+    if not name:
+        return jsonify({'message': 'Campaign name is required'}), 400
+    if len(name) > 100:
+        return jsonify({'message': 'Campaign names must be 100 characters or fewer'}), 400
+
+    # Wiki routes currently use the display name as their URL segment. Preventing
+    # ambiguous names keeps those routes deterministic while all stored campaign
+    # content and relationships continue to use the immutable campaign ID.
+    conflict = Campaign.query.filter(
+        Campaign.id != campaign.id,
+        func.lower(Campaign.name) == name.casefold(),
+    ).first()
+    if conflict:
+        return jsonify({'message': 'Another campaign already uses that name'}), 409
+
+    campaign.name = name
+    db.session.commit()
+    return jsonify({'campaign': campaign.to_dict()}), 200
+
+
+@app.route('/api/campaigns/<int:campaign_id>/profile-icon', methods=['PATCH', 'POST'])
+@jwt_required()
+def update_campaign_profile_icon(campaign_id):
+    campaign = Campaign.query.get(campaign_id)
+    if not campaign:
+        return jsonify({'message': 'Campaign not found'}), 404
+    if not user_can_edit_campaign(campaign):
+        return jsonify({'message': 'Only the campaign DM or owner may change its profile icon'}), 403
+
+    if request.method == 'PATCH':
+        data = request.get_json(silent=True) or {}
+        if data.get('reset'):
+            campaign.icon = None
+        else:
+            preset = campaign_icon_preset(str(data.get('preset_key') or ''))
+            if not preset:
+                return jsonify({'message': 'Choose a valid campaign icon preset'}), 400
+            campaign.icon = preset['url']
+    else:
+        if request.content_length and request.content_length > 5 * 1024 * 1024:
+            return jsonify({'message': 'Campaign icon uploads must be 5 MB or smaller'}), 413
+        uploaded = request.files.get('icon')
+        if not uploaded or not uploaded.filename:
+            return jsonify({'message': 'Choose an image to upload'}), 400
+        if not allowed_avatar_file(uploaded.filename):
+            return jsonify({'message': 'Campaign icons must be PNG, JPEG, or WebP images'}), 400
+        try:
+            campaign.icon = save_campaign_icon(uploaded, campaign.id)
+        except (OSError, ValueError):
+            app.logger.exception('Invalid campaign icon upload for campaign %s', campaign.id)
+            return jsonify({'message': 'The uploaded file is not a valid image'}), 400
+
+    db.session.commit()
+    return jsonify({'campaign': campaign.to_dict()}), 200
 
 
 @app.route('/api/campaigns/<int:campaign_id>/modules', methods=['GET'])
@@ -2634,11 +3167,13 @@ def install_campaign_module(campaign_id):
             location, settlement_result = import_module_settlement(campaign, template, settlement_strategy)
         calendar = ensure_module_calendar(campaign, definition, strategy=calendar_strategy)
         wiki_pages_added = seed_module_wiki_pages(campaign, definition['name'])
+        module_npcs_added = seed_module_npcs(campaign, definition)
         installation = record_module_installation(
             campaign, definition, user.id if user else None, settlement_strategy, calendar_strategy
         )
         if not campaign.module:
             campaign.module = definition['name']
+        campaign_atlas_config(campaign)
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -2656,9 +3191,62 @@ def install_campaign_module(campaign_id):
         'installation': installation.to_dict(),
         'settlement_result': settlement_result,
         'wiki_pages_added': wiki_pages_added,
+        'npcs_added': len(module_npcs_added),
         'calendar': calendar.to_dict() if calendar else None,
         **campaign_modules_payload(campaign),
     }), 201
+
+
+@app.route('/api/campaigns/<int:campaign_id>/modules/<module_key>/refresh', methods=['POST'])
+@jwt_required()
+def refresh_campaign_module(campaign_id, module_key):
+    """Idempotently import new preset material added after module installation."""
+    campaign = Campaign.query.get(campaign_id)
+    if not campaign:
+        return jsonify({'message': 'Campaign not found'}), 404
+    if not user_can_edit_campaign(campaign):
+        return jsonify({'message': 'Only the campaign DM or owner may refresh modules'}), 403
+    definition = module_definition(module_key)
+    if not definition:
+        return jsonify({'message': 'Unknown module'}), 404
+    installation = CampaignModuleInstallation.query.filter_by(
+        campaign_id=campaign.id, module_key=definition['key']
+    ).first()
+    if not installation:
+        return jsonify({'message': 'Install that module before refreshing it'}), 409
+
+    data = request.get_json(silent=True) or {}
+    settlement_strategy = data.get('settlement_strategy', 'merge')
+    if settlement_strategy not in {'merge', 'keep', 'override'}:
+        return jsonify({'message': 'Settlement strategy must be merge, keep, or override'}), 400
+
+    try:
+        template = campaign_module_template(definition['key'], MEDIA_ROOT)
+        location = None
+        settlement_result = 'none'
+        if template:
+            location, settlement_result = import_module_settlement(campaign, template, settlement_strategy)
+        wiki_pages_added = seed_module_wiki_pages(campaign, definition['name'])
+        module_npcs_added = seed_module_npcs(campaign, definition)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception('Unable to refresh module %s in campaign %s', definition['key'], campaign.id)
+        return jsonify({'message': 'The module refresh failed and no changes were saved'}), 500
+
+    if location:
+        socketio.emit(
+            'world_atlas_updated',
+            {'action': settlement_result, 'settlement': location.atlas_dict()},
+            to=f'campaign:{campaign.id}',
+        )
+    return jsonify({
+        'module_key': definition['key'],
+        'settlement_result': settlement_result,
+        'wiki_pages_added': wiki_pages_added,
+        'npcs_added': len(module_npcs_added),
+        'npc_total': NPC.query.filter_by(campaign_id=campaign.id).count(),
+    }), 200
 
 
 
@@ -2787,7 +3375,7 @@ def get_characterSheet():
     # Determine the System in use
     campaignID = request.headers.get('CampaignID')
     campaign = Campaign.query.filter_by(id=campaignID).first()
-    system = campaign.system if campaign else 'D&D 5e'
+    system = campaign.rules_system if campaign else 'D&D 5e'
 
     characterSheet = GameElement.query.filter_by(element_type='character_sheet', system=system).first()
     if not characterSheet:
@@ -3015,6 +3603,29 @@ def update_character():
         if not character:
             return jsonify({'error': 'Character not found'}), 404
 
+        requested_avatar_mode = data.get('avatar_mode')
+        if requested_avatar_mode is not None and requested_avatar_mode not in {
+            'initials', 'image', 'preset'
+        }:
+            return jsonify({'error': 'Invalid avatar mode'}), 400
+
+        requested_avatar_preset = data.get('avatar_preset_key')
+        if (
+            requested_avatar_preset is not None
+            and requested_avatar_preset
+            and character_avatar_preset(requested_avatar_preset) is None
+        ):
+            return jsonify({'error': 'Invalid avatar preset'}), 400
+
+        effective_avatar_mode = requested_avatar_mode or character.avatar_mode
+        effective_avatar_preset = (
+            requested_avatar_preset
+            if requested_avatar_preset is not None
+            else character.avatar_preset_key
+        )
+        if effective_avatar_mode == 'preset' and not effective_avatar_preset:
+            return jsonify({'error': 'Choose a preloaded portrait first'}), 400
+
         # app.logger.debug("Character from database- %s", character.to_dict())
         # app.logger.debug("UPDATE CHARACTER- Character JSON for Updating keys: %s", list(data.keys()))
         # app.logger.debug("UPDATE CHARACTER- incoming Wealth: %s", data.get('Wealth'))
@@ -3101,8 +3712,8 @@ def update_character():
         character.Proficiencies = json.dumps(cleaned_profs)
 
 
-        if data.get('avatar_mode') is not None:
-            character.avatar_mode = data.get('avatar_mode')
+        if requested_avatar_mode is not None:
+            character.avatar_mode = requested_avatar_mode
 
         if data.get('avatar_color') is not None:
             character.avatar_color = data.get('avatar_color')
@@ -3110,8 +3721,8 @@ def update_character():
         if data.get('avatar_text_color') is not None:
             character.avatar_text_color = data.get('avatar_text_color')
 
-        if data.get('avatar_preset_key') is not None:
-            character.avatar_preset_key = data.get('avatar_preset_key')
+        if requested_avatar_preset is not None:
+            character.avatar_preset_key = requested_avatar_preset
 
         if data.get('avatar_shape') is not None:
             character.avatar_shape = data.get('avatar_shape')
@@ -4558,7 +5169,7 @@ def installed_module_keys(campaign_id):
 def catalog_record_visible(record, campaign, modules=None):
     if record.campaign_id == campaign.id:
         return True
-    if not record.is_preset or record.campaign_id is not None or record.system != campaign.system:
+    if not record.is_preset or record.campaign_id is not None or record.system != campaign.rules_system:
         return False
     return not record.module_key or record.module_key in (modules if modules is not None else installed_module_keys(campaign.id))
 
@@ -4596,7 +5207,7 @@ def create_loot_box():
     if error:
         return error
 
-    loot_box = LootBox(name=loot_box_name, campaign_id=campaign.id, system=campaign.system,
+    loot_box = LootBox(name=loot_box_name, campaign_id=campaign.id, system=campaign.rules_system,
                        module_key=module_key, is_preset=False, created_by_id=user.id)
     db.session.add(loot_box)
     db.session.flush()
@@ -4750,6 +5361,56 @@ def issue_loot_box(box_id):
 ##************************##
 ## **       NPCs       ** ##
 ##************************##
+@app.route('/api/npcs/generation-options', methods=['GET'])
+@jwt_required()
+def get_npc_generation_options():
+    campaign, _user, error = catalog_campaign_context()
+    if error:
+        return error
+    return jsonify({**supported_generation_options(), 'campaign_id': campaign.id}), 200
+
+
+@app.route('/api/npcs/generate', methods=['POST'])
+@jwt_required()
+def generate_npcs():
+    campaign, _user, error = catalog_campaign_context(require_editor=True)
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    try:
+        count = int(data.get('count', 1))
+    except (TypeError, ValueError):
+        return jsonify({'message': 'Count must be a whole number'}), 400
+    if count < 1 or count > 50:
+        return jsonify({'message': 'Generate between 1 and 50 NPCs at a time'}), 400
+
+    save = data.get('save', True) is not False
+    base_seed = data.get('seed')
+    records = []
+    try:
+        for index in range(count):
+            seed = f'{base_seed}:{index}' if base_seed is not None else None
+            records.append(generated_npc(
+                seed=seed,
+                ancestry=data.get('ancestry') or data.get('race'),
+                gender=data.get('gender'),
+                occupation=data.get('occupation'),
+                alignment=data.get('alignment'),
+            ))
+    except ValueError as exc:
+        return jsonify({'message': str(exc), 'options': supported_generation_options()}), 400
+
+    if save:
+        models = [npc_from_record(campaign.id, record) for record in records]
+        db.session.add_all(models)
+        db.session.commit()
+        response_npcs = [npc.to_dict() | {'generation': record['generation']} for npc, record in zip(models, records)]
+    else:
+        response_npcs = [record | {'campaign_id': campaign.id} for record in records]
+
+    return jsonify({'npcs': response_npcs, 'saved': save, 'count': len(response_npcs)}), 201 if save else 200
+
+
 @app.route('/api/npcs', methods=['POST'])
 @jwt_required()
 def create_npc():
@@ -4850,7 +5511,7 @@ def create_random_table():
         description=description,
         dice_type=dice_type,
         campaign_id=campaign.id,
-        system=campaign.system,
+        system=campaign.rules_system,
         module_key=module_key,
         is_preset=False,
         created_by_id=user.id,
@@ -5484,19 +6145,102 @@ def resolve_settlement(campaign_id, supplied_id=None):
 
 
 def campaign_atlas_config(campaign):
+    installed_settings = {
+        value.setting_key for value in CampaignModuleInstallation.query.filter_by(campaign_id=campaign.id).all()
+        if value.setting_key
+    }
     module_name = (campaign.module or '').lower()
     faerun_terms = ('faerun', 'forgotten realms', 'waterdeep', 'neverwinter', 'baldur', 'icewind', 'chult', 'sword coast')
-    is_faerun = any(term in module_name for term in faerun_terms)
-    if not is_faerun:
-        return {'key': 'blank', 'name': 'Campaign World', 'tile_url_template': None, 'image_url': None}
-    return {
-        'key': 'faerun', 'name': 'Faerûn',
-        'tile_url_template': os.environ.get('FAERUN_ATLAS_TILE_URL'),
-        'tile_zoom': int(os.environ.get('FAERUN_ATLAS_TILE_ZOOM', '2')),
-        'image_url': os.environ.get('FAERUN_ATLAS_IMAGE_URL'),
-        'source_url': 'https://www.aidedd.org/atlas/faerun',
-        'attribution': os.environ.get('FAERUN_ATLAS_ATTRIBUTION', 'Configure a licensed Faerûn tile source'),
-    }
+    is_faerun = 'forgotten_realms' in installed_settings or any(term in module_name for term in faerun_terms)
+    setting_key = 'faerun' if is_faerun else 'custom'
+    setting_default = SettingWorldAtlas.query.filter_by(setting_key=setting_key).first()
+    stored = CampaignWorldAtlas.query.filter_by(campaign_id=campaign.id).first()
+    if stored:
+        if is_faerun and stored.setting_key != 'faerun':
+            stored.setting_key = 'faerun'
+            stored.coordinate_space_key = 'faerun-v1'
+            stored.name = 'Faerûn'
+        if not stored.image_asset_id and setting_default and setting_default.image_asset_id:
+            stored.image_asset_id = setting_default.image_asset_id
+            stored.attribution = setting_default.attribution
+            stored.source_name = setting_default.source_name
+        return stored.to_dict()
+    atlas = CampaignWorldAtlas(
+        campaign_id=campaign.id,
+        setting_key=setting_key,
+        coordinate_space_key='faerun-v1' if is_faerun else f'campaign-{campaign.id}-v1',
+        name='Faerûn' if is_faerun else 'Campaign World',
+        image_asset_id=setting_default.image_asset_id if setting_default else None,
+        attribution=setting_default.attribution if setting_default else None,
+        source_name=setting_default.source_name if setting_default else None,
+    )
+    db.session.add(atlas)
+    db.session.flush()
+    return atlas.to_dict()
+
+
+@app.route('/api/map-media/<public_id>', methods=['GET'])
+def get_map_media(public_id):
+    """Serve an opaque database asset URL usable by Three.js texture loaders."""
+    asset = MapMediaAsset.query.filter_by(public_id=public_id).first_or_404()
+    response = send_file(io.BytesIO(asset.data), mimetype=asset.mimetype, download_name=asset.original_filename)
+    response.headers['Cache-Control'] = 'private, max-age=604800, immutable'
+    response.set_etag(asset.sha256)
+    response.make_conditional(request)
+    return response
+
+
+@app.route('/api/world-atlas/<int:campaign_id>/image', methods=['POST'])
+@jwt_required()
+def upload_world_atlas_image(campaign_id):
+    campaign = Campaign.query.get(campaign_id)
+    if not campaign:
+        return jsonify({'message': 'Campaign not found'}), 404
+    if not user_can_edit_campaign(campaign):
+        return jsonify({'message': 'Only the campaign DM or owner may change its atlas'}), 403
+    uploaded = request.files.get('file')
+    if not uploaded or not uploaded.filename:
+        return jsonify({'message': 'Choose a licensed atlas image to upload'}), 400
+    if not allowed_map_reference_file(uploaded.filename):
+        return jsonify({'message': 'Atlas images must be PNG, JPEG, or WebP'}), 400
+    data = uploaded.read()
+    if len(data) > 60 * 1024 * 1024:
+        return jsonify({'message': 'Atlas images must be 60 MB or smaller'}), 413
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            pixel_width, pixel_height = image.size
+            image.verify()
+    except Exception:
+        return jsonify({'message': 'The uploaded file is not a valid image'}), 400
+    atlas = CampaignWorldAtlas.query.filter_by(campaign_id=campaign.id).first()
+    if not atlas:
+        campaign_atlas_config(campaign)
+        atlas = CampaignWorldAtlas.query.filter_by(campaign_id=campaign.id).first()
+    setting_default = request.form.get('setting_default', 'true').lower() in {'1', 'true', 'yes', 'on'} and atlas.setting_key == 'faerun'
+    asset = store_map_media_asset(
+        None if setting_default else campaign.id, data, secure_filename(uploaded.filename), uploaded.mimetype,
+        purpose='world_atlas', name=request.form.get('name') or atlas.name,
+        pixel_width=pixel_width, pixel_height=pixel_height,
+    )
+    atlas.image_asset_id = asset.id
+    atlas.name = (request.form.get('name') or atlas.name or 'Campaign World').strip()[:160]
+    atlas.source_name = secure_filename(uploaded.filename)[:255]
+    atlas.attribution = (request.form.get('attribution') or '').strip()
+    atlas.updated_at = datetime.now(timezone.utc)
+    if setting_default:
+        shared = SettingWorldAtlas.query.filter_by(setting_key=atlas.setting_key).first()
+        if not shared:
+            shared = SettingWorldAtlas(
+                setting_key=atlas.setting_key, coordinate_space_key=atlas.coordinate_space_key, name=atlas.name,
+            )
+            db.session.add(shared)
+        shared.image_asset_id = asset.id
+        shared.name = atlas.name
+        shared.source_name = atlas.source_name
+        shared.attribution = atlas.attribution
+        shared.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify(atlas.to_dict()), 201
 
 
 WORLD_SETTLEMENT_TYPES = {'hamlet', 'village', 'town', 'city', 'fortress', 'port', 'ruin', 'other'}
@@ -5512,8 +6256,8 @@ def settlement_generation_context(campaign):
         inherited_races.extend(item.get('name') for item in config.get('race_distribution', []) if item.get('name'))
         inherited_factions.extend(config.get('factions', []))
     try:
-        rules_races = [item.name for item in GameElement.query.filter_by(element_type='race', system=campaign.system).limit(80).all()]
-        rules_factions = [item.name for item in GameElement.query.filter_by(element_type='faction', system=campaign.system).limit(80).all()]
+        rules_races = [item.name for item in GameElement.query.filter_by(element_type='race', system=campaign.rules_system).limit(80).all()]
+        rules_factions = [item.name for item in GameElement.query.filter_by(element_type='faction', system=campaign.rules_system).limit(80).all()]
     except (AttributeError, SQLAlchemyError):
         rules_races, rules_factions = [], []
     race_names = list(dict.fromkeys([*inherited_races, *rules_races, 'Human', 'Elf', 'Dwarf', 'Halfling', 'Gnome']))
@@ -5536,7 +6280,9 @@ def get_world_atlas(campaign_id):
     locations = WorldAtlasLocation.query.filter_by(campaign_id=campaign_id).order_by(
         WorldAtlasLocation.is_primary.desc(), WorldAtlasLocation.name
     ).all()
-    return jsonify({'campaign': campaign.to_dict(), 'atlas': campaign_atlas_config(campaign),
+    atlas_config = campaign_atlas_config(campaign)
+    db.session.commit()
+    return jsonify({'campaign': campaign.to_dict(), 'atlas': atlas_config,
                     'locations': [location.atlas_dict() for location in locations]}), 200
 
 
@@ -5675,6 +6421,11 @@ def get_settlement_map_design(campaign_id):
     design = resolve_settlement(campaign_id)
     if not design:
         return jsonify({'message': 'Settlement not found'}), 404
+    migrated = persist_reference_layer_media(campaign_id, {'reference_layers': design.reference_layers or []})
+    if migrated['reference_layers'] != (design.reference_layers or []):
+        design.reference_layers = migrated['reference_layers']
+        design.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
     return jsonify({**design.to_map_dict(), 'asset_catalog': SETTLEMENT_BUILDING_ASSETS}), 200
 
 
@@ -5734,18 +6485,12 @@ def upload_settlement_reference_layer(campaign_id):
 
     requested_width = form_float('width_feet', pixel_width, 1)
     requested_height = form_float('height_feet', requested_width * pixel_height / max(pixel_width, 1), 1)
-    extension = secure_filename(uploaded.filename).rsplit('.', 1)[1].lower()
-    safe_stem = secure_filename(Path(uploaded.filename).stem)[:60] or 'reference-map'
     layer_id = uuid4().hex
-    campaign_root = MAP_REFERENCE_ROOT / str(campaign_id)
-    campaign_root.mkdir(parents=True, exist_ok=True)
-    filename = f'{safe_stem}-{layer_id}.{extension}'
-    original_path = campaign_root / filename
-    uploaded.save(original_path)
-    preview_filename = f'{safe_stem}-{layer_id}-viewer.jpg'
-    preview_path = campaign_root / preview_filename
+    uploaded.stream.seek(0)
+    original_bytes = uploaded.read()
+    preview_buffer = io.BytesIO()
     try:
-        with Image.open(original_path) as source:
+        with Image.open(io.BytesIO(original_bytes)) as source:
             if source.format == 'JPEG':
                 source.draft('RGB', (5500, 5500))
             source.thumbnail((5500, 5500), Image.Resampling.LANCZOS)
@@ -5757,18 +6502,29 @@ def upload_settlement_reference_layer(campaign_id):
                     flattened.paste(source)
                 source = flattened
             preview_width, preview_height = source.size
-            source.save(preview_path, 'JPEG', quality=90, optimize=True)
+            source.save(preview_buffer, 'JPEG', quality=90, optimize=True)
     except Exception:
-        original_path.unlink(missing_ok=True)
-        preview_path.unlink(missing_ok=True)
         app.logger.exception('Unable to generate map reference viewer image')
         return jsonify({'message': 'The original was valid, but a viewer image could not be generated'}), 500
+
+    original_asset = store_map_media_asset(
+        campaign_id, original_bytes, secure_filename(uploaded.filename), uploaded.mimetype,
+        purpose='map_reference_original', name=request.form.get('name'),
+        pixel_width=pixel_width, pixel_height=pixel_height,
+    )
+    preview_asset = store_map_media_asset(
+        campaign_id, preview_buffer.getvalue(), f'{Path(uploaded.filename).stem}-viewer.jpg', 'image/jpeg',
+        purpose='map_reference_preview', name=request.form.get('name'),
+        pixel_width=preview_width, pixel_height=preview_height,
+    )
 
     layer = {
         'id': layer_id,
         'name': request.form.get('name', '').strip()[:120] or Path(uploaded.filename).stem[:120],
-        'image_url': f'/media/maps/{campaign_id}/{preview_filename}',
-        'original_image_url': f'/media/maps/{campaign_id}/{filename}',
+        'image_url': preview_asset.content_url,
+        'image_asset_id': preview_asset.id,
+        'original_image_url': original_asset.content_url,
+        'original_image_asset_id': original_asset.id,
         'source_bytes': uploaded_size,
         'preview_pixel_width': preview_width,
         'preview_pixel_height': preview_height,

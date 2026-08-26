@@ -40,12 +40,15 @@ class CampaignModuleSeedTest(unittest.TestCase):
         campaign = SimpleNamespace(id=41, module="Waterdeep Dragon Heist")
         session = RecordingSession()
 
-        with patch.object(app_module.db, "session", session):
+        with patch.object(app_module.db, "session", session), \
+                patch.object(app_module, "persist_reference_layer_media", side_effect=lambda _campaign_id, template: template):
             location = app_module.seed_campaign_world(campaign)
 
         self.assertEqual(location.name, "Waterdeep")
         self.assertEqual(location.map_key, "waterdeep")
         self.assertTrue(location.is_primary)
+        self.assertAlmostEqual(location.atlas_x, 0.455)
+        self.assertAlmostEqual(location.atlas_y, 0.265)
         self.assertGreaterEqual(len(location.roads), 6)
         self.assertTrue(any(layer.get("layer_type") == "heightmap" for layer in location.reference_layers))
         self.assertEqual(session.flushes, 1)
@@ -86,6 +89,22 @@ class CampaignModuleSeedTest(unittest.TestCase):
 
         self.assertEqual([record["id"] for record in merged], ["custom-road", "shared", "module-road"])
         self.assertEqual(merged[1]["name"], "Current")
+
+    def test_module_npc_refresh_adds_missing_named_npcs_without_duplicates(self):
+        campaign = SimpleNamespace(id=44)
+        existing = SimpleNamespace(name="Laeral Silverhand")
+        session = RecordingSession()
+        definition = app_module.module_definition("waterdeep_dragon_heist")
+
+        with app_module.app.app_context(), \
+             patch.object(app_module.NPC, "query", QueryResult(all_values=[existing])), \
+             patch.object(app_module.db, "session", session):
+            added = app_module.seed_module_npcs(campaign, definition)
+
+        self.assertGreaterEqual(len(added), 34)
+        self.assertNotIn("Laeral Silverhand", {npc.name for npc in added})
+        self.assertIn("Jarlaxle Baenre", {npc.name for npc in added})
+        self.assertEqual(len(added), len(session.added))
 
 
 if __name__ == "__main__":

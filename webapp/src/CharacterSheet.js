@@ -118,6 +118,17 @@ function CharacterSheet({ headers, characterName, setCharacterName }) {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarUploadStatus, setAvatarUploadStatus] = useState('');
   const [avatarPreviewVersion, setAvatarPreviewVersion] = useState(0);
+  const [avatarPresets, setAvatarPresets] = useState([]);
+  const avatarPresetAuthorization = headers?.Authorization;
+
+  useEffect(() => {
+    if (!avatarPresetAuthorization) return;
+    axios.get('/api/profile-image-presets', {
+      headers: { Authorization: avatarPresetAuthorization },
+    })
+      .then(response => setAvatarPresets(response.data?.character_avatars || []))
+      .catch(error => console.error('[AvatarPresets] Unable to load presets:', error));
+  }, [avatarPresetAuthorization]);
 
   const handleAvatarUpload = async (event) => {
     const file = event.target.files?.[0];
@@ -289,14 +300,16 @@ function CharacterSheet({ headers, characterName, setCharacterName }) {
   };
 
   const getCharacterAvatar = () => {
+    const preset = avatarPresets.find(option => option.key === character.avatar_preset_key);
+    const presetUrl = character.avatar_mode === 'preset' ? preset?.url || null : null;
     return {
       ...DEFAULT_AVATAR,
       mode: character.avatar_mode || 'initials',
       initials: getInitials(character.Name),
       color: character.avatar_color || '#64748b',
       text_color: character.avatar_text_color || '#f8fafc',
-      image_url: character.avatar_thumb_url || character.avatar_image_url || null,
-      full_image_url: character.avatar_image_url || null,
+      image_url: presetUrl || character.avatar_thumb_url || character.avatar_image_url || null,
+      full_image_url: presetUrl || character.avatar_image_url || null,
       preset_key: character.avatar_preset_key || null,
       shape: character.avatar_shape || 'circle',
       frame_color: character.avatar_frame_color || null,
@@ -2356,10 +2369,33 @@ function CharacterSheet({ headers, characterName, setCharacterName }) {
                             >
                               <option value="initials">Initials</option>
                               <option value="image" disabled={!character.avatar_image_url}>Uploaded Image</option>
+                              <option value="preset" disabled={!character.avatar_preset_key}>Preloaded Portrait</option>
                             </Form.Select>
                           </Form.Group>
                         </Col>
                       </Row>
+
+                      <Form.Group className="mb-3">
+                        <Form.Label>Preloaded Portraits</Form.Label>
+                        <div className="character-avatar-presets">
+                          {avatarPresets.map(preset => (
+                            <button
+                              type="button"
+                              key={preset.key}
+                              className={character.avatar_mode === 'preset' && character.avatar_preset_key === preset.key ? 'selected' : ''}
+                              onClick={() => setCharacter(previous => ({
+                                ...previous,
+                                avatar_mode: 'preset',
+                                avatar_preset_key: preset.key,
+                              }))}
+                              aria-label={`Use ${preset.name} portrait`}
+                            >
+                              <img src={preset.url} alt="" />
+                              <span>{preset.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </Form.Group>
 
                       <Form.Group className="mb-3">
                         <Form.Label>Avatar Image</Form.Label>

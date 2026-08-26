@@ -41,7 +41,8 @@ new_campaign = None
 if admin_user:
     campaign_data = {
         "name": "Admin's Campaign",
-        "system": "D&D 5e",
+        "system": "D&D",
+        "ruleset": "5e",
         # "icon": "icon_url",
         "description": "A default campaign for testing",
         "scribes": []
@@ -50,6 +51,7 @@ if admin_user:
     new_campaign = Campaign(
         name=campaign_data['name'],
         system=campaign_data['system'],
+        ruleset=campaign_data['ruleset'],
         # icon=campaign_data['icon'],
         description=campaign_data['description'],
         owner_id=admin_user.id,

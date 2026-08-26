@@ -6,6 +6,12 @@ import campaignIcon from './campaign.webp';
 
 import CreateCharacterModal from './CreateCharacterModal';
 
+const campaignSystemLabel = (campaign) => (
+  campaign.system === 'D&D' && campaign.ruleset
+    ? `D&D · ${campaign.ruleset}`
+    : campaign.system
+);
+
 const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setCharacterName, dmLandingPath = '/dmTools', primaryOrigin = window.location.origin }) => {
   const navigate = useNavigate();
 
@@ -60,7 +66,8 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
         id: character.campaignID,
         name: character.campaign,
         dmId: null,
-        ownerId: null
+        ownerId: null,
+        rulesSystem: character.system,
       });
       console.log("AccountProfile- selected campaign:", character.campaign, character.campaignID);
   
@@ -78,7 +85,9 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
       id: campaign.id,
       name: campaign.name,
       dmId: campaign.dm_id,
-      ownerId: campaign.owner_id
+      ownerId: campaign.owner_id,
+      ruleset: campaign.ruleset,
+      rulesSystem: campaign.rules_system,
     });
     if (campaign.dm_id === headers.userID) {
       axios.get('/api/characters', { headers })
@@ -117,7 +126,7 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
             // Keep any reusable characters available for a later association
             // workflow, but open character creation now instead of crashing on
             // an attempted assignment to the React state setter.
-            setUnaffiliatedCharacters(response.data.filter(character => !character.campaignID && character.system === campaign.system));
+            setUnaffiliatedCharacters(response.data.filter(character => !character.campaignID && character.system === (campaign.rules_system || campaign.system)));
             handleCreateCharacter();
           }
         })
@@ -136,7 +145,9 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
       id: campaign.id,
       name: campaign.name,
       dmId: campaign.dm_id,
-      ownerId: campaign.owner_id
+      ownerId: campaign.owner_id,
+      ruleset: campaign.ruleset,
+      rulesSystem: campaign.rules_system,
     });
 
     console.log("opening wiki for", campaign.name);
@@ -173,7 +184,7 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
             setCharacterName(affiliatedCharacters[0].name);
             navigate('/characterSheet');
           } else {
-            setUnaffiliatedCharacters(response.data.filter(character => !character.campaignID && character.system === campaign.system));
+            setUnaffiliatedCharacters(response.data.filter(character => !character.campaignID && character.system === (campaign.rules_system || campaign.system)));
             handleCreateCharacter();
           }
         })
@@ -208,6 +219,7 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
   const [newCampaign, setNewCampaign] = useState({
     name: '',
     system: 'D&D',
+    ruleset: '5e',
     module: '',
     description: '',
     calendar_enabled: true,
@@ -256,7 +268,7 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
               <Carousel.Item key={campaign.id}>
                 <Carousel.Caption>
                   <h3 style={{ mixBlendMode: 'difference', color: 'red' }}>{campaign.name}</h3>
-                  <p style={{ mixBlendMode: 'difference', color: 'red' }}>{campaign.system}</p>
+                  <p style={{ mixBlendMode: 'difference', color: 'red' }}>{campaignSystemLabel(campaign)}</p>
                 </Carousel.Caption>
                 <img
                   className="d-flex justify-content-center align-items-center"
@@ -312,7 +324,7 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
                         <Col xs={8}>
                           <Card.Body>
                             <Card.Title>{campaign.name}</Card.Title>
-                            <Card.Subtitle className="mb-2 text-muted">{campaign.system}</Card.Subtitle>
+                            <Card.Subtitle className="mb-2 text-muted">{campaignSystemLabel(campaign)}</Card.Subtitle>
                             {/* Add more details here */}
                           </Card.Body>
                         </Col>
@@ -393,7 +405,7 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
                         <Col xs={8}>
                           <Card.Body>
                             <Card.Title>{campaign.name}</Card.Title>
-                            <Card.Subtitle className="mb-2 text-muted">{campaign.system}</Card.Subtitle>
+                            <Card.Subtitle className="mb-2 text-muted">{campaignSystemLabel(campaign)}</Card.Subtitle>
                             {/* Add more details here */}
                           </Card.Body>
                         </Col>
@@ -460,6 +472,15 @@ const AccountProfile = ({ headers, setAccountType, setSelectedCampaign, setChara
                 {/* Add more options here as needed */}
               </Form.Control>
             </Form.Group>
+            {newCampaign.system === 'D&D' && <Form.Group controlId="campaignRuleset" className="mt-3">
+              <Form.Label>D&amp;D Ruleset</Form.Label>
+              <Form.Control as="select" name="ruleset" value={newCampaign.ruleset} onChange={handleInputChange} required>
+                <option value="3.5e">3.5e</option>
+                <option value="4e">4e</option>
+                <option value="5e">5e</option>
+                <option value="5e (2024)">5e (2024)</option>
+              </Form.Control>
+            </Form.Group>}
             <Form.Group controlId="campaignModule">
               <Form.Label>Module</Form.Label>
               <Form.Control as="select" name="module" value={newCampaign.module} onChange={handleInputChange} >

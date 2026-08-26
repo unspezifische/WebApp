@@ -4,6 +4,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from module_npcs import module_npc_presets
+
 
 WATERDEEP_MODULE = "Waterdeep Dragon Heist"
 WATERDEEP_MAP_KEY = "waterdeep"
@@ -32,6 +34,7 @@ MODULE_DEFINITIONS = {
             "starting_day": 1,
         },
         "settlements": ["Waterdeep"],
+        "atlas_position": {"x": 0.455, "y": 0.265, "coordinate_space_key": "faerun-v1"},
         "description": "Urban intrigue in Waterdeep with a pre-built city simulation map.",
     },
     "lost_mine_of_phandelver": {
@@ -50,6 +53,7 @@ MODULE_DEFINITIONS = {
             "starting_day": 1,
         },
         "settlements": ["Phandalin"],
+        "atlas_position": {"x": 0.431, "y": 0.282, "coordinate_space_key": "faerun-v1"},
         "description": "Starter adventure metadata and Forgotten Realms calendar; its settlement template is not yet packaged.",
     },
 }
@@ -114,9 +118,11 @@ def _building(key, name, asset_key, u, v, width, depth, rooms):
 
 def _heightmap_layer(asset_root: Path):
     path = asset_root / "waterdeep_heightmap.png"
-    with Image.open(path) as source:
-        sampled = source.convert("L").resize((128, 128), Image.Resampling.LANCZOS)
-        values = list(sampled.tobytes())
+    values = []
+    if path.is_file():
+        with Image.open(path) as source:
+            sampled = source.convert("L").resize((128, 128), Image.Resampling.LANCZOS)
+            values = list(sampled.tobytes())
     return {
         "id": "waterdeep-heightmap",
         "layer_type": "heightmap",
@@ -278,6 +284,9 @@ def waterdeep_dragon_heist_template(media_root):
 
     return {
         "map_key": WATERDEEP_MAP_KEY, "name": "Waterdeep", "settlement_type": "city",
+        "atlas_x": MODULE_DEFINITIONS["waterdeep_dragon_heist"]["atlas_position"]["x"],
+        "atlas_y": MODULE_DEFINITIONS["waterdeep_dragon_heist"]["atlas_position"]["y"],
+        "coordinate_space_key": "faerun-v1",
         "notes": ("Pre-built Waterdeep: Dragon Heist starting map. Terrain and named positions "
                   "are editable; draft roads and POIs should be refined against the supplied keys."),
         "terrain_strokes": [], "roads": roads, "water_bodies": [], "buildings": buildings,
@@ -313,6 +322,7 @@ def module_catalog():
     return [
         {
             **definition,
+            "npc_count": len(module_npc_presets(definition["key"])),
             "calendar": {key: value for key, value in definition["calendar"].items() if key != "filename"},
         }
         for definition in MODULE_DEFINITIONS.values()

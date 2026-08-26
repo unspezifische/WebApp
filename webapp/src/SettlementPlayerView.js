@@ -20,6 +20,7 @@ export default function SettlementPlayerView({ headers, socket }) {
   const [partyPosition, setPartyPosition] = useState(null);
   const [settlementId, setSettlementId] = useState(null);
   const [settlementName, setSettlementName] = useState('New Settlement');
+  const [selectedBuilding,setSelectedBuilding]=useState(null);
   const [status, setStatus] = useState('Loading settlement…');
   const initialParams = new URLSearchParams(window.location.search);
   const requestedSettlementId = Number(initialParams.get('settlementID')) || null;
@@ -95,8 +96,8 @@ export default function SettlementPlayerView({ headers, socket }) {
         assets={map.asset_catalog?.length ? map.asset_catalog : FALLBACK_ASSET_CATALOG}
         buildings={map.buildings || []}
         setBuildings={ignoreEdit}
-        selected={null}
-        setSelected={ignoreEdit}
+        selected={selectedBuilding}
+        setSelected={setSelectedBuilding}
         roads={map.roads || []}
         setRoads={ignoreEdit}
         strokes={map.terrain_strokes || []}
@@ -115,11 +116,13 @@ export default function SettlementPlayerView({ headers, socket }) {
         fitRequest={(map.reference_layers || []).length ? 1 : 0}
         viewCommand={viewCommand}
         labelState={labelState}
+        campaignName={headers?.campaignName || headers?.CampaignName || initialParams.get('campaignName') || ''}
       /></Suspense>
       <div className="settlement-player-status" aria-live="polite">
         <strong>{settlementName}</strong>
         <span>{status || `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} · Day ${simulation.time?.day ?? '—'}`}</span>
       </div>
+      {selectedBuilding&&<aside className="settlement-player-building"><button type="button" onClick={()=>setSelectedBuilding(null)} aria-label="Close">×</button><strong>{selectedBuilding.name}</strong><span>{selectedBuilding.business_type||selectedBuilding.building_type||'Building'}</span>{selectedBuilding.description&&<p>{selectedBuilding.description}</p>}<small>{selectedBuilding.owner_name?`Owner: ${selectedBuilding.owner_name}`:'Owner unknown'} · {(selectedBuilding.rooms||[]).length} rooms</small></aside>}
     </div>
   );
 }
