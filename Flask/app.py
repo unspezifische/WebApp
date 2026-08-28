@@ -1351,7 +1351,7 @@ class SoundQuickEffectSlot(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint('campaign_id', 'slot', name='uq_sound_quick_effect_campaign_slot'),
-        db.CheckConstraint('slot >= 1 AND slot <= 5', name='ck_sound_quick_effect_slot_range'),
+        db.CheckConstraint('slot >= 1 AND slot <= 6', name='ck_sound_quick_effect_slot_range'),
     )
 
     def to_dict(self):
@@ -1945,7 +1945,7 @@ def serialized_quick_effect_slots(campaign_id):
         entry.slot: entry.to_dict()
         for entry in SoundQuickEffectSlot.query.filter_by(campaign_id=campaign_id).all()
     }
-    return [configured.get(slot, {'slot': slot, 'sound': None}) for slot in range(1, 6)]
+    return [configured.get(slot, {'slot': slot, 'sound': None}) for slot in range(1, 7)]
 
 
 def sound_upload_error(message, code, status, filename=None):
@@ -2235,8 +2235,8 @@ def configure_sound_quick_effect(slot):
     _user, campaign = sound_library_context()
     if not campaign:
         return jsonify({'message': 'Only a campaign DM or owner may configure Quick FX'}), 403
-    if slot < 1 or slot > 5:
-        return jsonify({'message': 'Quick FX slots are numbered 1 through 5'}), 400
+    if slot < 1 or slot > 6:
+        return jsonify({'message': 'Quick FX slots are numbered 1 through 6'}), 400
 
     data = request.get_json(silent=True) or {}
     sound_id = data.get('soundId')

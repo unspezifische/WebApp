@@ -30,6 +30,42 @@ const SoundPlayerContext = createContext(null);
 const SOUND_PLAYER_POSITION_KEY = 'kachhapa-sound-player-position';
 const SOUND_PLAYER_EDGE_GAP = 12;
 
+function clientUploadError(file) {
+  if (!file?.name) return 'The selected file has no filename.';
+  if (!/\.(mp3|wav|ogg|m4a|aac|webm|flac)$/i.test(file.name)) {
+    return 'Unsupported format. Choose MP3, WAV, OGG, M4A, AAC, WebM, or FLAC audio.';
+  }
+  if (file.size === 0) return 'The selected audio file is empty.';
+  if (file.size > 1024 * 1024 * 1024) return 'The file is larger than the 1 GB upload limit.';
+  return '';
+}
+
+function SoundUploadQueue({ items, onClear }) {
+  if (!items.length) return null;
+  return (
+    <aside className="sound-upload-queue" aria-label="Sound uploads">
+      <header>
+        <div><span className="sound-eyebrow">Uploads</span><strong>{items.length} file{items.length === 1 ? '' : 's'}</strong></div>
+        <button type="button" onClick={onClear} aria-label="Clear upload list"><Clear fontSize="small" /></button>
+      </header>
+      <div className="sound-upload-queue-list">
+        {items.map((item) => (
+          <div className={`sound-upload-queue-item is-${item.status}`} key={item.id}>
+            <span className="sound-upload-filename" title={item.filename}>{item.filename}</span>
+            {item.status === 'error' ? (
+              <span className="sound-upload-error-indicator" role="img" aria-label={`Upload failed for ${item.filename}: ${item.error}`} title={item.error} data-error={item.error}><ErrorOutline /></span>
+            ) : item.status === 'complete' ? (
+              <span className="sound-upload-complete" role="img" aria-label={`Uploaded ${item.filename}`}><CheckCircleOutline /></span>
+            ) : (
+              <span className="sound-upload-progress" role="progressbar" aria-label={`Uploading ${item.filename}: ${item.progress}%`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={item.progress} style={{ '--sound-upload-progress': `${item.progress}%` }}><span>{item.progress}</span></span>
+            )}
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
 function storedPlayerPosition() {
   try {
     const position = JSON.parse(window.localStorage.getItem(SOUND_PLAYER_POSITION_KEY));
@@ -88,7 +124,9 @@ export function DMSoundPlayerProvider({ headers, socket, enabled = true, childre
   const [backgroundCurrentTime, setBackgroundCurrentTime] = useState(0);
   const [backgroundDuration, setBackgroundDuration] = useState(0);
   const [backgroundHistoryLength, setBackgroundHistoryLength] = useState(0);
-  const [quickEffects, setQuickEffects] = useState(Array.from({ length: 5 }, (_unused, index) => ({ slot: index + 1, sound: null })));
+  const [quickEffects, setQuickEffects] = useState(Array.from({ length: 6 }, (_unused, index) => ({ slot: index + 1, sound: null })));
+  const [uploadQueue, setUploadQueue] = useState([]);
+  const uploadSequence = useRef(0);
 
   const replaceQueue = useCallback((tracks) => {
     queueRef.current = tracks;
@@ -351,6 +389,60 @@ export function DMSoundPlayerProvider({ headers, socket, enabled = true, childre
     return response.data.sound;
   }, [headers]);
 
+  const updateUploadQueueItem = useCallback((id, changes) => {
+    setUploadQueue((current) => current.map((item) => item.id === id ? { ...item, ...changes } : item));
+  }, []);
+
+  const uploadFiles = useCallback(async (entries) => {
+    const queued = entries.map((entry) => {
+      uploadSequence.current += 1;
+      const uploadError = clientUploadError(entry.file);
+      return {
+        ...entry,
+        id: `sound-upload-${Date.now()}-${uploadSequence.current}`,
+        filename: entry.file?.name || 'Unnamed file',
+        progress: 0,
+        status: uploadError ? 'error' : 'uploading',
+        error: uploadError,
+      };
+    });
+    setUploadQueue((current) => [...current, ...queued]);
+    const uploadable = queued.filter((item) => item.status === 'uploading');
+    if (!uploadable.length) return false;
+
+    const results = await Promise.all(uploadable.map(async (item) => {
+      try {
+        await uploadSound({
+          file: item.file,
+          name: item.name,
+          category: item.category,
+          onUploadProgress: (progressEvent) => {
+            if (!progressEvent.total) return;
+            const progress = Math.min(99, Math.round((progressEvent.loaded / progressEvent.total) * 100));
+            updateUploadQueueItem(item.id, { progress });
+          },
+        });
+        updateUploadQueueItem(item.id, { progress: 100, status: 'complete' });
+        return true;
+      } catch (requestError) {
+        const message = requestError.response?.data?.message || requestError.message || 'The upload could not be completed.';
+        updateUploadQueueItem(item.id, { status: 'error', error: message });
+        return false;
+      }
+    }));
+    return results.every(Boolean) && queued.every((item) => item.status !== 'error');
+  }, [updateUploadQueueItem, uploadSound]);
+
+  useEffect(() => {
+    if (!uploadQueue.some((item) => item.status === 'uploading')) return undefined;
+    const warnBeforeLeaving = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeLeaving);
+    return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
+  }, [uploadQueue]);
+
   const configureQuickEffect = useCallback(async (slot, sound) => {
     const response = await axios.put(`/api/sound-quick-effects/${slot}`, { soundId: sound?.id ?? null }, { headers });
     setQuickEffects(response.data.slots || []);
@@ -402,6 +494,7 @@ export function DMSoundPlayerProvider({ headers, socket, enabled = true, childre
     backgroundDuration,
     backgroundHistoryLength,
     quickEffects,
+    uploadQueue,
     fetchSounds,
     fetchPlaylists,
     fetchQuickEffects,
@@ -415,6 +508,8 @@ export function DMSoundPlayerProvider({ headers, socket, enabled = true, childre
     stopEffect,
     setEffectVolume,
     uploadSound,
+    uploadFiles,
+    clearUploadQueue: () => setUploadQueue([]),
     enqueueTrack,
     removeQueuedTrack,
     clearQueue,
@@ -449,6 +544,7 @@ export function DMSoundPlayerProvider({ headers, socket, enabled = true, childre
         />
       ))}
       <audio ref={effectsAudio} onEnded={() => setEffectPlaying(false)} />
+      {enabled && <SoundUploadQueue items={uploadQueue} onClear={() => setUploadQueue([])} />}
     </SoundPlayerContext.Provider>
   );
 }
@@ -496,7 +592,7 @@ function QuickEffects({ configurable = false }) {
     <div className={`sound-quick-effects${configurable ? ' is-configurable' : ''}`}>
       <div className="sound-quick-effects-heading">
         <strong>Quick FX</strong>
-        {configurable && <span>Drag five Sound FX clips here to configure them</span>}
+        {configurable && <span>Drag six Sound FX clips here to configure them</span>}
       </div>
       <div className="sound-quick-effects-grid">
         {player.quickEffects.map(({ slot, sound }) => (
@@ -526,15 +622,13 @@ export function DMSoundPlayerWorkspace() {
   const [playlistFilter, setPlaylistFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [soundSort, setSoundSort] = useState('title-asc');
-  const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [upload, setUpload] = useState({ files: [], name: '', category: 'music' });
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [playlistSelections, setPlaylistSelections] = useState({});
   const [uploadPanelOpen, setUploadPanelOpen] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
-  const [uploadQueue, setUploadQueue] = useState([]);
-  const uploadSequence = useRef(0);
+  const uploading = player.uploadQueue.some((item) => item.status === 'uploading');
   const visibleSounds = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const playlistTrackIds = new Set(
@@ -585,67 +679,11 @@ export function DMSoundPlayerWorkspace() {
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
   };
 
-  const updateUploadQueueItem = (id, changes) => {
-    setUploadQueue((current) => current.map((item) => item.id === id ? { ...item, ...changes } : item));
-  };
-
-  const clientUploadError = (file) => {
-    if (!file?.name) return 'The selected file has no filename.';
-    if (!/\.(mp3|wav|ogg|m4a|aac|webm|flac)$/i.test(file.name)) {
-      return 'Unsupported format. Choose MP3, WAV, OGG, M4A, AAC, WebM, or FLAC audio.';
-    }
-    if (file.size === 0) return 'The selected audio file is empty.';
-    if (file.size > 1024 * 1024 * 1024) return 'The file is larger than the 1 GB upload limit.';
-    return '';
-  };
-
-  const uploadFiles = async (entries) => {
-    const queued = entries.map((entry) => {
-      uploadSequence.current += 1;
-      const error = clientUploadError(entry.file);
-      return {
-        ...entry,
-        id: `sound-upload-${Date.now()}-${uploadSequence.current}`,
-        filename: entry.file?.name || 'Unnamed file',
-        progress: 0,
-        status: error ? 'error' : 'uploading',
-        error,
-      };
-    });
-    setUploadQueue((current) => [...current, ...queued]);
-    const uploadable = queued.filter((item) => item.status === 'uploading');
-    if (!uploadable.length) return false;
-
-    setUploading(true);
-    setUploadError('');
-    const results = await Promise.all(uploadable.map(async (item) => {
-      try {
-        await player.uploadSound({
-          file: item.file,
-          name: item.name,
-          category: item.category,
-          onUploadProgress: (progressEvent) => {
-            if (!progressEvent.total) return;
-            const progress = Math.min(99, Math.round((progressEvent.loaded / progressEvent.total) * 100));
-            updateUploadQueueItem(item.id, { progress });
-          },
-        });
-        updateUploadQueueItem(item.id, { progress: 100, status: 'complete' });
-        return true;
-      } catch (requestError) {
-        const message = requestError.response?.data?.message || requestError.message || 'The upload could not be completed.';
-        updateUploadQueueItem(item.id, { status: 'error', error: message });
-        return false;
-      }
-    }));
-    setUploading(false);
-    return results.every(Boolean) && queued.every((item) => item.status !== 'error');
-  };
-
   const submitUpload = async (event) => {
     event.preventDefault();
     if (!upload.files.length) return;
-    const uploaded = await uploadFiles(upload.files.map((file) => ({
+    setUploadError('');
+    const uploaded = await player.uploadFiles(upload.files.map((file) => ({
       file,
       category: upload.category,
       name: upload.files.length === 1 && upload.name.trim()
@@ -681,7 +719,7 @@ export function DMSoundPlayerWorkspace() {
   };
 
   const uploadDroppedFiles = async (files) => {
-    await uploadFiles([...files].map((file) => ({
+    await player.uploadFiles([...files].map((file) => ({
       file,
       name: file.name.replace(/\.[^.]+$/, ''),
       category: upload.category,
@@ -829,28 +867,6 @@ export function DMSoundPlayerWorkspace() {
         </div>
       </section>
 
-      {uploadQueue.length > 0 && (
-        <aside className="sound-upload-queue" aria-label="Sound uploads">
-          <header>
-            <div><span className="sound-eyebrow">Uploads</span><strong>{uploadQueue.length} file{uploadQueue.length === 1 ? '' : 's'}</strong></div>
-            <button type="button" onClick={() => setUploadQueue([])} aria-label="Clear upload list"><Clear fontSize="small" /></button>
-          </header>
-          <div className="sound-upload-queue-list">
-            {uploadQueue.map((item) => (
-              <div className={`sound-upload-queue-item is-${item.status}`} key={item.id}>
-                <span className="sound-upload-filename" title={item.filename}>{item.filename}</span>
-                {item.status === 'error' ? (
-                  <span className="sound-upload-error-indicator" role="img" aria-label={`Upload failed for ${item.filename}: ${item.error}`} title={item.error} data-error={item.error}><ErrorOutline /></span>
-                ) : item.status === 'complete' ? (
-                  <span className="sound-upload-complete" role="img" aria-label={`Uploaded ${item.filename}`}><CheckCircleOutline /></span>
-                ) : (
-                  <span className="sound-upload-progress" role="progressbar" aria-label={`Uploading ${item.filename}: ${item.progress}%`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={item.progress} style={{ '--sound-upload-progress': `${item.progress}%` }}><span>{item.progress}</span></span>
-                )}
-              </div>
-            ))}
-          </div>
-        </aside>
-      )}
     </div>
   );
 }

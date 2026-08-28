@@ -158,6 +158,50 @@ for filename in sys.argv[1:]:
 PY
 }
 
+validate_alembic_graph() {
+  python3 - Flask/migrations/versions <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+migrations_path = Path(sys.argv[1])
+revisions = {}
+dependencies = set()
+
+for migration_path in sorted(migrations_path.glob("*.py")):
+    tree = ast.parse(migration_path.read_text(), filename=str(migration_path))
+    values = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
+            values[target.id] = ast.literal_eval(node.value)
+    revision = values.get("revision")
+    if not revision:
+        raise SystemExit(f"{migration_path}: missing revision identifier")
+    if revision in revisions:
+        raise SystemExit(f"Duplicate Alembic revision {revision}: {revisions[revision]} and {migration_path}")
+    revisions[revision] = migration_path
+    down_revision = values.get("down_revision")
+    if isinstance(down_revision, str):
+        dependencies.add(down_revision)
+    elif down_revision:
+        dependencies.update(down_revision)
+
+missing = sorted(dependencies.difference(revisions))
+if missing:
+    raise SystemExit(f"Alembic migration graph references missing revision(s): {', '.join(missing)}")
+
+heads = sorted(set(revisions).difference(dependencies))
+if not heads:
+    raise SystemExit("Alembic migration graph has no head revision")
+print(f"Alembic migration head{'s' if len(heads) != 1 else ''}: {', '.join(heads)}")
+if len(heads) > 1:
+    print("Multiple migration branches detected; deployment will apply all heads.")
+PY
+}
+
 validate_nginx_structure() {
   local config_path=$1
   local expected_hostname=$2
@@ -224,6 +268,7 @@ local_preflight() {
     validate_python_syntax Flask/app.py
     validate_python_syntax Flask/module_templates.py
     [[ ! -f Flask/extract_dnd_pdf.py ]] || validate_python_syntax Flask/extract_dnd_pdf.py
+    validate_alembic_graph
     validate_service_file kachhapa-backend.service
     grep -q '/venv/bin/gunicorn' kachhapa-backend.service ||
       fail "kachhapa-backend.service does not launch Gunicorn from the Kachhapa virtualenv."
@@ -348,6 +393,33 @@ deploy_tools() {
     "$DESTINATION:/home/ijohnson/5etools-src/"
 }
 
+backup_kachhapa_database() {
+  local backup_name="database_backup_${TARGET_HOST_SHORT}.dump"
+  CURRENT_STEP="Raspberry Pi database backup"
+  echo "==> Backing up the production Kachhapa database to $backup_name"
+  ssh "$DESTINATION" "bash -s" -- "$backup_name" <<'REMOTE'
+set -Eeuo pipefail
+backup_name=$1
+backup_path="/home/ijohnson/$backup_name"
+tmp_dump=$(mktemp "/home/ijohnson/${backup_name}.XXXXXX")
+trap 'rm -f "$tmp_dump"' EXIT
+PGPASSWORD=admin pg_dump -U admin -h localhost -F c db -f "$tmp_dump"
+mv "$tmp_dump" "$backup_path"
+trap - EXIT
+REMOTE
+
+  CURRENT_STEP="database backup download"
+  local local_dump
+  local_dump=$(mktemp "./${backup_name}.XXXXXX")
+  trap 'rm -f "${local_dump:-}"' RETURN
+  scp "$DESTINATION:/home/ijohnson/$backup_name" "$local_dump"
+  [[ -s "$local_dump" ]] || fail "Downloaded database backup is empty; existing backup was preserved."
+  file "$local_dump" | grep -q "PostgreSQL custom database dump" ||
+    fail "Downloaded file is not a PostgreSQL custom dump; existing backup was preserved."
+  mv "$local_dump" "$backup_name"
+  trap - RETURN
+}
+
 deploy_kachhapa() {
   CURRENT_STEP="Kachhapa file transfer"
   echo "==> Deploying Kachhapa"
@@ -359,11 +431,6 @@ deploy_kachhapa() {
   rsync -avz Flask/static/ "$DESTINATION:$KACHHAPA_ROOT/Flask/static/"
   rsync -avz Flask/migrations/ "$DESTINATION:$KACHHAPA_ROOT/Flask/migrations/"
   rsync -avz Flask/media/modules/ "$DESTINATION:$KACHHAPA_ROOT/Flask/media/modules/"
-  rsync -avz --delete webapp/build/ "$DESTINATION:$KACHHAPA_ROOT/webapp/build/"
-
-  CURRENT_STEP="Kachhapa frontend artifact verification"
-  ssh "$DESTINATION" "test -r '$KACHHAPA_ROOT/webapp/build/index.html' && test -s '$KACHHAPA_ROOT/webapp/build/index.html'" ||
-    fail "The deployed Kachhapa frontend is missing a readable, non-empty build/index.html."
 
   CURRENT_STEP="Kachhapa dependency check"
   scp Flask/requirements.txt "$DESTINATION:$KACHHAPA_ROOT/Flask/requirements.txt.new"
@@ -382,32 +449,55 @@ else
 fi
 REMOTE
 
-  CURRENT_STEP="Raspberry Pi database backup"
-  ssh "$DESTINATION" "bash -s" <<'REMOTE'
-set -Eeuo pipefail
-tmp_dump=$(mktemp /home/ijohnson/database_backup.dump.XXXXXX)
-trap 'rm -f "$tmp_dump"' EXIT
-PGPASSWORD=admin pg_dump -U admin -h localhost -F c db -f "$tmp_dump"
-mv "$tmp_dump" /home/ijohnson/database_backup.dump
-trap - EXIT
-REMOTE
-
-  CURRENT_STEP="database backup download"
-  local local_dump
-  local_dump=$(mktemp "./database_backup.dump.XXXXXX")
-  trap 'rm -f "${local_dump:-}"' RETURN
-  scp "$DESTINATION:/home/ijohnson/database_backup.dump" "$local_dump"
-  [[ -s "$local_dump" ]] || fail "Downloaded database backup is empty; existing backup was preserved."
-  file "$local_dump" | grep -q "PostgreSQL custom database dump" ||
-    fail "Downloaded file is not a PostgreSQL custom dump; existing backup was preserved."
-  mv "$local_dump" database_backup.dump
-  trap - RETURN
+  backup_kachhapa_database
 
   CURRENT_STEP="Kachhapa database migration"
-  ssh "$DESTINATION" "cd $KACHHAPA_ROOT/Flask && $KACHHAPA_ROOT/venv/bin/flask db upgrade"
+  echo "==> Applying all Kachhapa database migration heads"
+  ssh "$DESTINATION" "cd $KACHHAPA_ROOT/Flask && $KACHHAPA_ROOT/venv/bin/flask db upgrade heads"
+
+  CURRENT_STEP="Kachhapa frontend deployment"
+  ssh "$DESTINATION" "mkdir -p '$KACHHAPA_ROOT/webapp/build.next'"
+  rsync -avz --delete webapp/build/ "$DESTINATION:$KACHHAPA_ROOT/webapp/build.next/"
+  CURRENT_STEP="Kachhapa frontend artifact verification"
+  ssh "$DESTINATION" "bash -s" -- "$KACHHAPA_ROOT" <<'REMOTE'
+set -Eeuo pipefail
+root=$1
+next="$root/webapp/build.next"
+live="$root/webapp/build"
+previous="$root/webapp/build.previous"
+
+test -r "$next/index.html" && test -s "$next/index.html" || {
+  echo "The staged Kachhapa frontend is missing a readable, non-empty build/index.html." >&2
+  exit 1
+}
+rm -rf "$previous"
+if [[ -d "$live" ]]; then
+  mv "$live" "$previous"
+fi
+if ! mv "$next" "$live"; then
+  [[ ! -d "$previous" ]] || mv "$previous" "$live"
+  echo "Could not activate the staged Kachhapa frontend; the prior frontend was restored." >&2
+  exit 1
+fi
+REMOTE
 
   CURRENT_STEP="Kachhapa service restart"
-  ssh "$DESTINATION" "sudo -n /usr/local/sbin/kachhapa-deploy-root restart $KACHHAPA_SERVICE"
+  if ! ssh "$DESTINATION" "sudo -n /usr/local/sbin/kachhapa-deploy-root restart $KACHHAPA_SERVICE"; then
+    CURRENT_STEP="Kachhapa frontend rollback"
+    ssh "$DESTINATION" "bash -s" -- "$KACHHAPA_ROOT" <<'REMOTE' || true
+set -Eeuo pipefail
+root=$1
+live="$root/webapp/build"
+previous="$root/webapp/build.previous"
+
+if [[ -d "$previous" ]]; then
+  mv "$live" "$root/webapp/build.failed.$(date -u +%Y%m%dT%H%M%SZ)"
+  mv "$previous" "$live"
+  echo "Restored the previous Kachhapa frontend after the backend restart failed." >&2
+fi
+REMOTE
+    fail "Kachhapa backend restart failed; the previous frontend was restored."
+  fi
 }
 
 deploy_mtg() {

@@ -25,7 +25,7 @@ describe('DM sound player', () => {
       ],
     });
     mock.onGet('/api/sound-quick-effects').reply(200, {
-      slots: Array.from({ length: 5 }, (_unused, index) => ({ slot: index + 1, sound: null })),
+      slots: Array.from({ length: 6 }, (_unused, index) => ({ slot: index + 1, sound: null })),
     });
   });
 
@@ -130,7 +130,7 @@ describe('DM sound player', () => {
   test('assigns a library sound effect to a Quick FX slot by dropping it', async () => {
     const assignedSlots = [
       { slot: 1, sound: { id: 2, name: 'Fireball', category: 'sfx', url: '/media/sounds/fireball.mp3' } },
-      ...Array.from({ length: 4 }, (_unused, index) => ({ slot: index + 2, sound: null })),
+      ...Array.from({ length: 5 }, (_unused, index) => ({ slot: index + 2, sound: null })),
     ];
     mock.onPut('/api/sound-quick-effects/1').reply(200, { slots: assignedSlots });
 
@@ -171,6 +171,40 @@ describe('DM sound player', () => {
     expect(await screen.findByRole('progressbar', { name: 'Uploading rain.mp3: 25%' })).toBeInTheDocument();
     await act(async () => finishUpload());
     expect(await screen.findByRole('img', { name: 'Uploaded rain.mp3' })).toBeInTheDocument();
+  });
+
+  test('keeps an active upload and its progress visible after leaving the Music Player page', async () => {
+    let finishUpload;
+    mock.onPost('/api/sounds').reply((config) => new Promise((resolve) => {
+      config.onUploadProgress({ loaded: 40, total: 100 });
+      finishUpload = () => resolve([201, {
+        sound: { id: 11, name: 'Long ambience', category: 'music', url: '/media/sounds/long.mp3', uploadedBy: 'gm' },
+      }]);
+    }));
+
+    function NavigationHarness() {
+      const [showPlayer, setShowPlayer] = React.useState(true);
+      return (
+        <DMSoundPlayerProvider headers={{ Authorization: 'Bearer test', campaignID: 1 }}>
+          <button type="button" onClick={() => setShowPlayer(false)}>Leave Music Player</button>
+          {showPlayer && <DMSoundPlayerWorkspace />}
+        </DMSoundPlayerProvider>
+      );
+    }
+
+    const { container } = render(<NavigationHarness />);
+    const file = new File(['audio bytes'], 'long.mp3', { type: 'audio/mpeg' });
+    fireEvent.click(screen.getByRole('button', { name: /Upload/i }));
+    fireEvent.change(container.querySelector('.sound-upload-drawer input[type="file"]'), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add to library' }));
+    expect(await screen.findByRole('progressbar', { name: 'Uploading long.mp3: 40%' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Leave Music Player' }));
+    expect(screen.queryByText('Sound library')).not.toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Uploading long.mp3: 40%' })).toBeInTheDocument();
+
+    await act(async () => finishUpload());
+    expect(await screen.findByRole('img', { name: 'Uploaded long.mp3' })).toBeInTheDocument();
   });
 
   test('shows the server reason on a failed drag-and-drop upload', async () => {

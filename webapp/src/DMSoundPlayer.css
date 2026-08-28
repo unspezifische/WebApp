@@ -183,6 +183,27 @@
 .sound-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .sound-sidebar-heading h3 { margin: 0; font-size: 1.05rem; }
 .sound-sidebar-upload-toggle { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.4rem 0.55rem; border-radius: 0.55rem; font-size: 0.75rem; }
+.sound-sidebar-upload-toggle,
+.sound-playlist-create button,
+.sound-playlist-assignment button,
+.sound-selected-playlist-tools button,
+.sound-upload-drawer button {
+  border: 1px solid var(--border-main);
+  background: var(--bg-surface-3);
+  color: var(--text-main);
+}
+.sound-sidebar-upload-toggle:hover:not(:disabled),
+.sound-playlist-create button:hover:not(:disabled),
+.sound-playlist-assignment button:hover:not(:disabled),
+.sound-selected-playlist-tools button:hover:not(:disabled),
+.sound-upload-drawer button:hover:not(:disabled) {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.sound-playlist-create button:disabled,
+.sound-playlist-assignment button:disabled,
+.sound-selected-playlist-tools button:disabled,
+.sound-upload-drawer button:disabled { opacity: 0.42; }
 .sound-playlist-sidebar .sound-playlist-create { width: 100%; }
 .sound-playlist-sidebar .sound-playlist-create input { min-width: 0; flex: 1; }
 .sound-playlist-sidebar .sound-playlist-create button { width: 2.2rem; padding-inline: 0; }
@@ -215,7 +236,6 @@
 .sound-playlist-sidebar .sound-quick-effects-heading span { display: none; }
 .sound-playlist-sidebar .sound-quick-effects-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sound-playlist-sidebar .sound-quick-effects-grid button { min-height: 48px; }
-.sound-playlist-sidebar .sound-quick-effects-grid button:last-child { grid-column: 1 / -1; }
 
 .sound-now-playing { position: sticky; bottom: 0; z-index: 30; padding: 0.55rem 0.75rem 0.7rem; border: 1px solid var(--border-strong); border-radius: 0.85rem; background: color-mix(in srgb, var(--bg-surface) 96%, transparent); box-shadow: 0 -12px 28px color-mix(in srgb, #000 24%, transparent); backdrop-filter: blur(12px); }
 .sound-now-playing-label { display: block; margin: 0 0 0.35rem 0.25rem; color: var(--text-subtle); font-size: 0.65rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; }
@@ -331,6 +351,7 @@
   box-shadow: 0 18px 48px color-mix(in srgb, #000 40%, transparent);
   backdrop-filter: blur(10px);
 }
+body:has(.sound-now-playing) .sound-upload-queue { bottom: 11rem; }
 .sound-upload-queue > header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--border-main); }
 .sound-upload-queue > header > div { display: flex; align-items: baseline; gap: 0.55rem; }
 .sound-upload-queue > header > div strong { font-size: 0.82rem; }
@@ -423,7 +444,7 @@
 .sound-quick-effects { display: flex; flex-direction: column; gap: 0.6rem; }
 .sound-quick-effects-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 0.8rem; }
 .sound-quick-effects-heading span { color: var(--text-subtle); font-size: 0.74rem; }
-.sound-quick-effects-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.45rem; }
+.sound-quick-effects-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.45rem; }
 .sound-quick-effects-grid button {
   position: relative;
   display: grid;
@@ -560,7 +581,7 @@
 .sound-quick-effects { display: flex; flex-direction: column; gap: 0.6rem; }
 .sound-quick-effects-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
 .sound-quick-effects-heading span { color: var(--text-subtle); font-size: 0.72rem; }
-.sound-quick-effects-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.45rem; }
+.sound-quick-effects-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.45rem; }
 .sound-quick-effects-grid button { position: relative; min-width: 0; min-height: 64px; display: grid; grid-template-columns: auto auto; align-content: center; justify-content: center; gap: 0.25rem 0.35rem; padding: 0.55rem; border: 1px dashed var(--border-strong); border-radius: 0.65rem; background: var(--bg-surface-3); color: var(--text-subtle); }
 .sound-quick-effects-grid button>span { position: absolute; top: 0.25rem; left: 0.4rem; font-size: 0.62rem; opacity: 0.7; }
 .sound-quick-effects-grid button>strong { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.7rem; }
@@ -586,7 +607,7 @@
 .sound-open-workspace { width: 100% !important; height: auto !important; display: flex !important; gap: 0.35rem; margin-top: 0.7rem; padding: 0.5rem !important; border-radius: 0.55rem !important; }
 .sound-mini-panel .sound-quick-effects { margin-top: 0.8rem; padding-top: 0.75rem; border-top: 1px solid var(--border-main); }
 .sound-mini-panel .sound-quick-effects-heading span { display: none; }
-.sound-mini-panel .sound-quick-effects-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.sound-mini-panel .sound-quick-effects-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .sound-mini-panel .sound-quick-effects-grid button { display: flex; flex-direction: column; justify-content: center; width: 100%; height: 66px; padding: 0.25rem; text-align: center; }
 .sound-mini-panel .sound-quick-effects-grid button > span { position: absolute; top: 0.2rem; left: 0.2rem; }
 .sound-mini-panel .sound-quick-effects-grid button > strong { width: 100%; font-size: 0.62rem; }
@@ -615,11 +636,9 @@
   .sound-playlist-card .sound-shuffle-toggle { grid-column: 1 / -1; grid-row: 2; }
   .sound-mini-player.is-tray-open { top: 0.75rem; left: 0.75rem; right: 0.75rem; grid-template-columns: auto minmax(0, 1fr) repeat(5, auto); }
   .sound-mini-player.is-collapsed { top: 0.75rem; left: auto; right: 0.75rem; }
-  .sound-quick-effects-grid { grid-template-columns: repeat(5, minmax(48px, 1fr)); overflow-x: auto; }
+  .sound-quick-effects-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sound-library-row { grid-template-columns: auto minmax(0, 1fr); }
   .sound-library-actions, .sound-playlist-assignment { grid-column: 1 / -1; justify-content: flex-end; }
-  .sound-quick-effects-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .sound-quick-effects-grid button:last-child { grid-column: 1 / -1; }
   .sound-mini-player.is-collapsed { left: auto; }
   .sound-mini-player.is-tray-open { grid-template-columns: auto minmax(0, 1fr) repeat(5, auto); }
   .sound-now-playing { position: static; }
