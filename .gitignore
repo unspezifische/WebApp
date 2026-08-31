@@ -32,3 +32,5 @@ __pycache__/
 database_backup_before_5etools_import.sql
 database_backup.dump copy
 database_backup_*.dump
+
+.continue/

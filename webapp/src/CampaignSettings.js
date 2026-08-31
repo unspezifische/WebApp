@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Alert, Badge, Button, Card, Form, Modal, Spinner } from 'react-bootstrap';
 
+import IconEditorModal from './IconEditorModal';
 import './CampaignSettings.css';
 
 export default function CampaignSettings({ campaignID, headers, embedded = false }) {
@@ -10,6 +11,7 @@ export default function CampaignSettings({ campaignID, headers, embedded = false
   const [settlementStrategy,setSettlementStrategy]=useState('merge'),[calendarStrategy,setCalendarStrategy]=useState('keep_current');
   const [installing,setInstalling]=useState(false),[notice,setNotice]=useState('');
   const [iconSaving,setIconSaving]=useState(false),[iconInputKey,setIconInputKey]=useState(0);
+  const [iconModalOpen,setIconModalOpen]=useState(false);
   const [rulesetSaving,setRulesetSaving]=useState(false);
   const [campaignName,setCampaignName]=useState(''),[nameSaving,setNameSaving]=useState(false);
   const [refreshingModule,setRefreshingModule]=useState('');
@@ -80,16 +82,17 @@ export default function CampaignSettings({ campaignID, headers, embedded = false
     finally{setIconSaving(false);}
   };
 
-  const uploadCampaignIcon=async(event)=>{
-    const file=event.target.files?.[0];if(!file)return;
-    if(file.size>5*1024*1024){setError('Campaign icon uploads must be 5 MB or smaller.');setIconInputKey(value=>value+1);return;}
+  const uploadCampaignIcon=async(processedBlob)=>{
+    if(!processedBlob)return;
     setIconSaving(true);setError('');setNotice('');
     try{
-      const body=new FormData();body.append('icon',file);
+      const iconFile=new File([processedBlob],`campaign-icon-${Date.now()}.png`,{type:processedBlob.type||'image/png'});
+      const body=new FormData();body.append('icon',iconFile);
       const response=await axios.post(`/api/campaigns/${campaignID}/profile-icon`,body,{headers});
       replaceCampaign(response.data.campaign);setNotice('Campaign profile icon uploaded.');
+      setIconModalOpen(false);
     }catch(requestError){setError(requestError.response?.data?.message||'Unable to upload the campaign icon');}
-    finally{setIconSaving(false);setIconInputKey(value=>value+1);}
+    finally{setIconSaving(false);}
   };
 
   const resetCampaignIcon=async()=>{
@@ -146,10 +149,20 @@ export default function CampaignSettings({ campaignID, headers, embedded = false
           <div className="campaign-icon-options">
             <strong>Preloaded icons</strong>
             <div className="campaign-icon-presets">{(settings?.profile_icon_presets||[]).map(preset=><button type="button" key={preset.key} className={settings?.campaign?.icon===preset.url?'selected':''} onClick={()=>chooseCampaignIcon(preset.key)} disabled={iconSaving} aria-label={`Use ${preset.name} campaign icon`}><img src={preset.url} alt=""/><span>{preset.name}</span></button>)}</div>
-            <Form.Group><Form.Label>Upload your own</Form.Label><Form.Control key={iconInputKey} type="file" accept="image/png,image/jpeg,image/webp" onChange={uploadCampaignIcon} disabled={iconSaving}/><Form.Text>PNG, JPEG, or WebP; up to 5 MB. Images are cropped to a square.</Form.Text></Form.Group>
-            <div className="campaign-icon-actions"><Button variant="outline-secondary" size="sm" onClick={resetCampaignIcon} disabled={iconSaving||!settings?.campaign?.icon}>Use default</Button>{iconSaving&&<span><Spinner size="sm"/> Saving…</span>}</div>
+            <div className="campaign-icon-actions">
+              <Button variant="outline-primary" size="sm" onClick={()=>setIconModalOpen(true)} disabled={iconSaving}>Edit & Upload</Button>
+              <Button variant="outline-secondary" size="sm" onClick={resetCampaignIcon} disabled={iconSaving||!settings?.campaign?.icon}>Use default</Button>
+              {iconSaving&&<span><Spinner size="sm"/> Saving…</span>}
+            </div>
           </div>
         </div>
+
+        <IconEditorModal
+          show={iconModalOpen}
+          onClose={()=>setIconModalOpen(false)}
+          onUpload={uploadCampaignIcon}
+          disabled={iconSaving}
+        />
       </Card.Body></Card>
 
       <Card className="settings-card"><Card.Body>

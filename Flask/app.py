@@ -574,6 +574,8 @@ class SettlementMapDesign(db.Model):
 class WorldAtlasLocation(db.Model):
     """A place on a campaign atlas with its own independently editable map."""
     id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(80), nullable=False, default='System')
+
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id'), nullable=False, index=True)
     name = db.Column(db.String(120), nullable=False, default='New Settlement')
     location_type = db.Column(db.String(30), nullable=False, default='settlement')
@@ -786,6 +788,7 @@ class NobleFamily(db.Model):
 class SettlementEconomicAgent(db.Model):
     id=db.Column(db.Integer,primary_key=True)
     campaign_id=db.Column(db.Integer,db.ForeignKey('campaign.id'),nullable=False,index=True)
+
     npc_id=db.Column(db.Integer,db.ForeignKey('npc.id'),nullable=True,unique=True)
     name=db.Column(db.String(120),nullable=False)
     strength=db.Column(db.Integer,nullable=False,default=10);dexterity=db.Column(db.Integer,nullable=False,default=10)
@@ -829,6 +832,7 @@ class Page(db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    source = db.Column(db.String(80), nullable=False, default='Homebrew')  # Denotes the source of the page, e.g., a module or homebrew
     title = db.Column(db.String(80), nullable=False)
     content = db.Column(db.Text, nullable=True)
     wiki_id = db.Column(db.Integer, db.ForeignKey('campaign.id'), nullable=False)
@@ -902,6 +906,8 @@ loot_box_items = db.Table('loot_box_items',
 
 class Item(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(80), nullable=False, default='Homebrew'))    ## denotes the source of the item, e.g., a module or homebrew
+
     name = db.Column(db.String(80), nullable=False)
     type = db.Column(db.String(80), nullable=False)
     cost = db.Column(db.Integer, nullable=False)
@@ -1172,6 +1178,8 @@ class Message(db.Model):
 
 class NPC(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(80), nullable=False, default='Homebrew')  # Denotes the source of the NPC, e.g., a module or homebrew)
+
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id'), nullable=False)
     name = db.Column(db.String(80), nullable=False)
     size = db.Column(db.String(20), nullable=False)  # Example: "Medium"
@@ -1360,6 +1368,8 @@ class SoundQuickEffectSlot(db.Model):
 
 class LootBox(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(80), nullable=False, default='Homebrew'))
+
     name = db.Column(db.String(80), nullable=False) ## Which lootbox the item is in
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id', ondelete='CASCADE'), nullable=True, index=True)
     system = db.Column(db.String(50), nullable=True, index=True)
@@ -1424,6 +1434,8 @@ class TableEntry(db.Model):
 
 class Calendar(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(80), nullable=False, default='System'))
+    
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)
 
@@ -1530,6 +1542,7 @@ class Calendar(db.Model):
 class CalendarEvent(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     calendar_id = db.Column(db.Integer, db.ForeignKey('calendar.id'), nullable=False)
+    source = db.Column(db.String(80), nullable=False, default='System'))
 
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)

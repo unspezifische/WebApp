@@ -32,7 +32,7 @@ Publishing is offline-safe when requirements files are unchanged. Existing
 installations must run scripts/configure-publish-sudo.sh NAME once before
 their first fully noninteractive publish.
 
-Example: ./publish.sh --hostname kachhapa-two --nginx
+Example: ./publish.sh --hostname raspberrypi.local --all
 EOF
 }
 
@@ -159,7 +159,8 @@ PY
 }
 
 validate_alembic_graph() {
-  python3 - Flask/migrations/versions <<'PY'
+  local migrations_versions_path="${1:-Flask/migrations/versions}"
+  python3 - "$migrations_versions_path" <<'PY'
 import ast
 import sys
 from pathlib import Path
@@ -508,6 +509,7 @@ deploy_mtg() {
     "$DESTINATION:$MTG_ROOT/backend/"
   rsync -avz MtG-webapp/backend/app/ "$DESTINATION:$MTG_ROOT/backend/app/"
   rsync -avz MtG-webapp/backend/scripts/ "$DESTINATION:$MTG_ROOT/backend/scripts/"
+  rsync -avz MtG-webapp/backend/migrations/ "$DESTINATION:$MTG_ROOT/backend/migrations/"
   rsync -avz MtG-webapp/data/ "$DESTINATION:$MTG_ROOT/data/"
   rsync -avz --delete MtG-webapp/frontend/build/ "$DESTINATION:$MTG_ROOT/frontend/build/"
 
@@ -535,6 +537,10 @@ REMOTE
   CURRENT_STEP="MTG database setup"
   ssh "$DESTINATION" "sudo -n /usr/local/sbin/kachhapa-deploy-root mtg-db"
   ssh "$DESTINATION" "cd '$MTG_ROOT/backend' && DATABASE_URL='postgresql+psycopg2://admin:admin@127.0.0.1:5432/mtg_sandbox' PG_RAW_URL='postgresql://admin:admin@127.0.0.1:5432/mtg_sandbox' '$MTG_ROOT/venv/bin/python' -c 'from run import initialize_database; initialize_database()'"
+
+  CURRENT_STEP="MTG database migration"
+  echo "==> Applying MTG database migration heads"
+  ssh "$DESTINATION" "cd '$MTG_ROOT/backend' && FLASK_APP='app:create_app' DATABASE_URL='postgresql+psycopg2://admin:admin@127.0.0.1:5432/mtg_sandbox' PG_RAW_URL='postgresql://admin:admin@127.0.0.1:5432/mtg_sandbox' '$MTG_ROOT/venv/bin/flask' db upgrade heads"
 
   CURRENT_STEP="MTG service restart"
   ssh "$DESTINATION" "sudo -n /usr/local/sbin/kachhapa-deploy-root restart $MTG_SERVICE"
