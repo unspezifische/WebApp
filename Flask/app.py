@@ -506,6 +506,7 @@ def seed_campaign_world(campaign):
 
     location = WorldAtlasLocation(
         campaign_id=campaign.id,
+        source='Module',
         name=template['name'],
         map_key=template['map_key'],
         settlement_type=template['settlement_type'],
@@ -868,9 +869,44 @@ def seed_module_wiki_pages(campaign, module_name, existing_titles=None):
         if not normalized_title or normalized_title == 'Main Page' or normalized_title in seeded_titles:
             continue
         seeded_titles.add(normalized_title)
-        db.session.add(Page(title=normalized_title, content=content, wiki=campaign))
+        db.session.add(Page(title=normalized_title, content=content, wiki=campaign, source='Module'))
         added += 1
     return added
+
+
+def get_module_base_wiki_pages(module_name):
+    """Retrieve the base wiki pages for a module in their default state."""
+    module_pages = GameElement.query.filter_by(module=module_name, element_type='wiki').all()
+    
+    base_pages = []
+    for module_page in module_pages:
+        page_data = module_page.data or {}
+        title = page_data.get('title') or module_page.name
+        content = page_data.get('content', '')
+        
+        # Return the base pages as they are defined in the module
+        base_pages.append({
+            'title': title,
+            'content': content,
+            'module': module_name,
+            'source': 'Module'
+        })
+    
+    return base_pages
+
+
+@app.route('/api/modules/<string:module_name>/wiki/base-pages', methods=['GET'])
+def get_module_base_wiki_pages_endpoint(module_name):
+    """API endpoint to retrieve base wiki pages for a module."""
+    try:
+        base_pages = get_module_base_wiki_pages(module_name)
+        return jsonify({
+            'module': module_name,
+            'pages': base_pages
+        })
+    except Exception as e:
+        app.logger.error(f"Error retrieving base wiki pages for module {module_name}: {str(e)}")
+        return jsonify({'error': 'Failed to retrieve base wiki pages'}), 500
 
 
 def seed_campaign_wiki(campaign, module_name=None):
@@ -906,7 +942,7 @@ loot_box_items = db.Table('loot_box_items',
 
 class Item(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    source = db.Column(db.String(80), nullable=False, default='Homebrew'))    ## denotes the source of the item, e.g., a module or homebrew
+    source = db.Column(db.String(80), nullable=False, default='Homebrew')  # Denotes the source of the item, e.g., a module or homebrew
 
     name = db.Column(db.String(80), nullable=False)
     type = db.Column(db.String(80), nullable=False)
@@ -1178,7 +1214,7 @@ class Message(db.Model):
 
 class NPC(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    source = db.Column(db.String(80), nullable=False, default='Homebrew')  # Denotes the source of the NPC, e.g., a module or homebrew)
+    source = db.Column(db.String(80), nullable=False, default='Homebrew')  # Denotes the source of the NPC, e.g., a module or homebrew
 
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id'), nullable=False)
     name = db.Column(db.String(80), nullable=False)
@@ -1368,7 +1404,7 @@ class SoundQuickEffectSlot(db.Model):
 
 class LootBox(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    source = db.Column(db.String(80), nullable=False, default='Homebrew'))
+    source = db.Column(db.String(80), nullable=False, default='Homebrew')  # Denotes the source of the loot box, e.g., a module or homebrew
 
     name = db.Column(db.String(80), nullable=False) ## Which lootbox the item is in
     campaign_id = db.Column(db.Integer, db.ForeignKey('campaign.id', ondelete='CASCADE'), nullable=True, index=True)
@@ -1434,7 +1470,7 @@ class TableEntry(db.Model):
 
 class Calendar(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    source = db.Column(db.String(80), nullable=False, default='System'))
+    source = db.Column(db.String(80), nullable=False, default='System')  # Denotes the source of the calendar, e.g., a module or homebrew
     
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)
@@ -1542,7 +1578,7 @@ class Calendar(db.Model):
 class CalendarEvent(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     calendar_id = db.Column(db.Integer, db.ForeignKey('calendar.id'), nullable=False)
-    source = db.Column(db.String(80), nullable=False, default='System'))
+    source = db.Column(db.String(80), nullable=False, default='System')  # Denotes the source of the event, e.g., a module or homebrew
 
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)
@@ -1603,6 +1639,7 @@ def ensure_module_calendar(campaign, definition, strategy='keep_current'):
             name=f"{campaign.name} In-World Calendar",
             description=f"{definition['setting_name']} calendar for {campaign.name}",
             campaign_id=campaign.id,
+            source='Module',
             format_id=format_element.id,
             format_slug=calendar_config['slug'],
             current_year=definition.get('starting_year') or 1,
@@ -1643,6 +1680,7 @@ def import_module_settlement(campaign, template, strategy):
     if not location:
         location = WorldAtlasLocation(
             campaign_id=campaign.id,
+            source='Module',
             name=template['name'],
             map_key=template['map_key'],
             settlement_type=template['settlement_type'],
@@ -1737,10 +1775,10 @@ NPC_RECORD_FIELDS = {
 }
 
 
-def npc_from_record(campaign_id, record):
+def npc_from_record(campaign_id, record, source='Homebrew'):
     """Build an NPC model from either a generated or module preset record."""
     values = {key: record.get(key) for key in NPC_RECORD_FIELDS}
-    return NPC(campaign_id=campaign_id, **values)
+    return NPC(campaign_id=campaign_id, source=source, **values)
 
 
 def seed_module_npcs(campaign, definition):
@@ -1757,7 +1795,7 @@ def seed_module_npcs(campaign, definition):
         normalized_name = preset['name'].strip().casefold()
         if normalized_name in existing_names:
             continue
-        npc = npc_from_record(campaign.id, preset)
+        npc = npc_from_record(campaign.id, preset, source='Module')
         db.session.add(npc)
         added.append(npc)
         existing_names.add(normalized_name)
@@ -2942,6 +2980,7 @@ def campaigns():
             db.session.add(Calendar(
                 name=f'{campaign.name} Calendar',
                 description=f'Calendar for {campaign.name}',
+                source='Homebrew',
                 campaign_id=campaign.id,
                 format_id=format_element.id,
                 format_slug=format_slug,
@@ -6339,6 +6378,7 @@ def create_world_atlas_settlement(campaign_id):
     }
     location = WorldAtlasLocation(
         campaign_id=campaign_id, name=name or 'New Settlement', map_key=uuid4().hex,
+        source='Homebrew',
         settlement_type=settlement_type, population=generated['population'],
         notes=str(data.get('notes') or '').strip()[:4000], atlas_x=atlas_x, atlas_y=atlas_y,
         environment=generated['environment'], generation_config=generated['generation_config'],
@@ -7060,6 +7100,7 @@ def create_campaign_calendar(campaign_id):
     calendar = Calendar(
         name=str(data.get('name') or f'{campaign.name} Calendar').strip()[:100],
         description=str(data.get('description') or f'Calendar for {campaign.name}').strip(),
+        source='Homebrew',
         campaign_id=campaign.id,
         format_id=format_element.id,
         format_slug=format_slug,
@@ -7209,6 +7250,7 @@ def create_calendar_event(campaign_id):
 
     event = CalendarEvent(
         calendar_id=calendar.id,
+        source='Homebrew',
         name=data.get('name'),
         description=data.get('description'),
         color=data.get('color'),

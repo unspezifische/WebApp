@@ -1,0 +1,187 @@
+/* Additional styles for tool panels to prevent overlapping */
+.editor-menu {
+  position: absolute;
+  top: 70px;
+  left: 12px;
+  z-index: 50;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.road-menu {
+  top: 70px;
+  left: 12px;
+  z-index: 50;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.secondary-editor-menu {
+  top: 150px;
+  left: 12px;
+  z-index: 49;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.sea-level-menu {
+  top: 230px;
+  left: 12px;
+  z-index: 48;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.region-menu {
+  top: 310px;
+  left: 12px;
+  z-index: 47;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.asset-menu {
+  top: 390px;
+  left: 12px;
+  z-index: 46;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.terrain-menu {
+  top: 470px;
+  left: 12px;
+  z-index: 45;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.fortification-menu {
+  top: 550px;
+  left: 12px;
+  z-index: 44;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu.water-menu {
+  top: 630px;
+  left: 12px;
+  z-index: 43;
+  width: 280px;
+  padding: 12px;
+  border: 1px solid #ffffff2c;
+  border-radius: 7px;
+  background: #14201cce;
+  box-shadow: 0 8px 22px #07100bbb;
+  color: #d7dfda;
+  font-size: 9px;
+  user-select: none;
+}
+
+.editor-menu button {
+  min-height: 28px;
+  padding: 4px;
+  border: 1px solid #53645a;
+  border-radius: 4px;
+  background: #23352d;
+  color: #d5ddd7;
+  font-size: 8px;
+  touch-action: none;
+}
+
+.editor-menu button:hover,
+.editor-menu button:active {
+  border-color: #d0a957;
+  background: #a87e3e;
+  color: #17211c;
+}
+
+.editor-menu label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.editor-menu input[type="range"] {
+  width: 100%;
+  accent-color: #bd9149;
+}
+
+.editor-menu input[type="checkbox"] {
+  accent-color: #bd9149;
+}
+
+.editor-menu select {
+  width: 100%;
+  padding: 4px;
+  border: 1px solid #53645a;
+  border-radius: 4px;
+  background: #23352d;
+  color: #d5ddd7;
+  font-size: 8px;
+}
+
+.editor-menu small {
+  display: block;
+  margin-top: 8px;
+  color: #aebbb3;
+  line-height: 1.45;
+}

@@ -54,7 +54,7 @@ def _npc(key, name, role, ancestry="human", alignment="neutral", profile="common
         "challenge": data["challenge"],
         "traits": f"Module role: {role}",
         "actions": "See the installed adventure module when encounter-level actions are required.",
-        "description": description or f"A Waterdeep: Dragon Heist NPC associated with the role of {role.lower()}.",
+        "description": description or f"A Waterdeep: Dragon Heist NPC associated with the role of {role.lower()}. This NPC is from the WDH (Waterdeep: Dragon Heist) campaign module.",
     }
 
 
@@ -102,7 +102,7 @@ WATERDEEP_DRAGON_HEIST_NPCS = (
 )
 
 
-MODULE_NPCS = {"waterdeep_dragon_heist": WATERDEEP_DRAGON_HEIST_NPCS}
+MODULE_NPCS = {"Waterdeep Dragon Heist": WATERDEEP_DRAGON_HEIST_NPCS}
 
 
 def module_npc_presets(identifier) -> list[dict]:

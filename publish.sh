@@ -15,13 +15,14 @@ readonly MTG_SERVICE="mtg-backend"
 DEPLOY_KACHHAPA=false
 DEPLOY_MTG=false
 DEPLOY_NGINX=false
+DEPLOY_MODULES=false
 CHECK_ONLY=false
 CURRENT_STEP="initialization"
 RENDERED_NGINX_CONFIG=""
 
 usage() {
   cat <<'EOF'
-Usage: ./publish.sh [--hostname NAME] [--kachhapa] [--mtg] [--nginx] [--all] [--check]
+Usage: ./publish.sh [--hostname NAME] [--kachhapa] [--mtg] [--nginx] [--modules] [--all] [--check]
 
 With no deployment selection, all components are selected.
 --check performs every local preflight/build check and never contacts the Pi.
@@ -82,6 +83,7 @@ if [[ $# -eq 0 ]]; then
   DEPLOY_KACHHAPA=true
   DEPLOY_MTG=true
   DEPLOY_NGINX=true
+  DEPLOY_MODULES=true
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -95,10 +97,12 @@ while [[ $# -gt 0 ]]; do
     --kachhapa) DEPLOY_KACHHAPA=true ;;
     --mtg) DEPLOY_MTG=true ;;
     --nginx) DEPLOY_NGINX=true ;;
+    --modules) DEPLOY_MODULES=true ;;
     --all)
       DEPLOY_KACHHAPA=true
       DEPLOY_MTG=true
       DEPLOY_NGINX=true
+      DEPLOY_MODULES=true
       ;;
     --check) CHECK_ONLY=true ;;
     -h|--help)
@@ -122,14 +126,15 @@ else
 fi
 
 # "--check" alone validates everything, matching the no-argument deployment set.
-if $CHECK_ONLY && ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX; then
+if $CHECK_ONLY && ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX && ! $DEPLOY_MODULES; then
   DEPLOY_KACHHAPA=true
   DEPLOY_MTG=true
   DEPLOY_NGINX=true
+  DEPLOY_MODULES=true
 fi
 
-if ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX; then
-  fail "Nothing selected. Choose --kachhapa, --mtg, --nginx, or --all."
+if ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX && ! $DEPLOY_MODULES; then
+  fail "Nothing selected. Choose --kachhapa, --mtg, --nginx, --modules, or --all."
 fi
 
 require_command() {
@@ -273,6 +278,11 @@ local_preflight() {
     validate_service_file kachhapa-backend.service
     grep -q '/venv/bin/gunicorn' kachhapa-backend.service ||
       fail "kachhapa-backend.service does not launch Gunicorn from the Kachhapa virtualenv."
+  fi
+
+  if $DEPLOY_MODULES; then
+    require_path Flask/modules
+    [[ -f Flask/modules/README.md ]] || fail "Flask/modules/README.md is required for module deployment."
   fi
 
   if $DEPLOY_MTG; then
@@ -454,7 +464,7 @@ REMOTE
 
   CURRENT_STEP="Kachhapa database migration"
   echo "==> Applying all Kachhapa database migration heads"
-  ssh "$DESTINATION" "cd $KACHHAPA_ROOT/Flask && $KACHHAPA_ROOT/venv/bin/flask db upgrade heads"
+  ssh "$DESTINATION" "cd $KACHHAPA_ROOT/Flask && source $KACHHAPA_ROOT/venv/bin/activate && flask db upgrade heads"
 
   CURRENT_STEP="Kachhapa frontend deployment"
   ssh "$DESTINATION" "mkdir -p '$KACHHAPA_ROOT/webapp/build.next'"
@@ -549,6 +559,21 @@ REMOTE
   ssh "$DESTINATION" "for attempt in {1..15}; do curl --fail --silent http://127.0.0.1:5050/api/health >/dev/null 2>&1 && exit 0; sleep 2; done; echo 'mtg-backend.service did not answer on port 5050 after 30 seconds' >&2; exit 1"
 }
 
+deploy_modules() {
+  CURRENT_STEP="Module file transfer"
+  echo "==> Deploying campaign module bundles"
+  ssh "$DESTINATION" "mkdir -p '$KACHHAPA_ROOT/Flask/modules'"
+  rsync -avz Flask/modules/ "$DESTINATION:$KACHHAPA_ROOT/Flask/modules/"
+
+  CURRENT_STEP="Module artifact verification"
+  ssh "$DESTINATION" "test -r '$KACHHAPA_ROOT/Flask/modules/README.md' && test -s '$KACHHAPA_ROOT/Flask/modules/README.md'" ||
+    fail "The deployed module bundle is missing a readable, non-empty modules/README.md."
+
+  CURRENT_STEP="Module database migration"
+  echo "==> Ensuring campaign module tables exist"
+  ssh "$DESTINATION" "cd '$KACHHAPA_ROOT/Flask' && source '$KACHHAPA_ROOT/venv/bin/activate' && flask db upgrade heads"
+}
+
 deploy_nginx() {
   CURRENT_STEP="Nginx configuration update"
   prepare_rendered_nginx
@@ -569,6 +594,7 @@ fi
 remote_preflight
 $DEPLOY_KACHHAPA && deploy_kachhapa
 $DEPLOY_MTG && deploy_mtg
+$DEPLOY_MODULES && deploy_modules
 if $DEPLOY_NGINX; then
   deploy_tools
   deploy_nginx

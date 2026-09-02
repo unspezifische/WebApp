@@ -54,6 +54,12 @@
     <script src="/wiki-static/axios.min.js"></script>
     <script src="/wiki-static/bootstrap.min.js"></script>
     <script src="/wiki-static/jodit.min.js"></script>
+    <script src="/wiki-static/jodit.min.js"></script>
+    
+    <!-- Socket.IO client library -->
+    <script src="/socket.io/socket.io.js"></script>
+
+    <!-- Retrieve the header data from localStorage -->
 
     <!-- Retrieve the header data from localStorage -->
     <script>
@@ -76,6 +82,58 @@
           };
         }
         if (characterName) {
+      });
+    </script>
+    
+    <!-- Socket.IO initialization -->
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        // Initialize Socket.IO connection
+        initializeSocket();
+      });
+      
+      function initializeSocket() {
+        try {
+          // Connect to the socket.io server using the same host as the main app
+          const socket = io({
+            auth: {
+              token: window.authInfo?.token || null
+            },
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000,
+            timeout: 10000
+          });
+          
+          // Handle connection events
+          socket.on('connect', function() {
+            console.log('Socket connected successfully');
+            // Send campaign ID when connecting (if available)
+            if (window.authInfo?.userID) {
+              socket.emit('join_campaign', { 
+                campaignID: window.location.pathname.split('/')[3], 
+                userID: window.authInfo.userID 
+              });
+            }
+          });
+          
+          socket.on('disconnect', function(reason) {
+            console.log('Socket disconnected:', reason);
+          });
+          
+          socket.on('connect_error', function(error) {
+            console.error('Socket connection error:', error);
+          });
+          
+          // Store socket reference globally for use in other functions
+          window.socket = socket;
+          
+        } catch (error) {
+          console.error('Failed to initialize socket:', error);
+        }
+      }
+    </script>
           console.log('Character name found in local storage:', characterName);
           window.authInfo.characterName = characterName;
         } else {
