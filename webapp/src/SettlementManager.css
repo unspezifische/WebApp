@@ -1937,18 +1937,19 @@
 
 .map-scale-indicator {
   position: absolute;
-  right: 18px;
+  left: 50%;
   top: 18px;
   z-index: 3;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   gap: 3px;
   padding: 6px 8px;
   border-radius: 4px;
   background: #14201cce;
   color: #e7e0d3;
-  pointer-events: none
+  pointer-events: none;
+  transform: translateX(-50%)
 }
 
 .map-scale-indicator span {
@@ -3093,8 +3094,8 @@
 
 .map-view-mode {
   position: absolute;
-  right: 18px;
-  top: 45px;
+  right: 330px;
+  top: 18px;
   z-index: 3;
   display: flex;
   align-items: center;
