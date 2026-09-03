@@ -24,6 +24,11 @@ export default function AtlasViewport({ atlas, locations = [], selectedId, onSel
       {draftMarker?.atlas_x != null && <div className="atlas-draft-marker" style={{ left: `${draftMarker.atlas_x * 100}%`, top: `${draftMarker.atlas_y * 100}%` }}><i/><span>{draftMarker.name || 'New settlement'}</span></div>}
     </div>
     <div className="atlas-viewport-controls"><button type="button" onClick={() => zoomAt(view.zoom / 1.35)} aria-label="Zoom out">−</button><span>{Math.round(view.zoom * 100)}%</span><button type="button" onClick={() => zoomAt(view.zoom * 1.35)} aria-label="Zoom in">+</button><button type="button" onClick={() => setView({ zoom: 1, x: 0, y: 0 })}>Fit</button></div>
-    <small className="atlas-navigation-hint">Wheel to zoom · drag to pan{placementEnabled ? ' · click to place marker' : ''}</small>
+    <small className="atlas-navigation-hint">Wheel to zoom · drag to pan{placementEnabled ? ' · click to place marker (normalized coordinates)' : ''}</small>
+    {placementEnabled && (
+      <div className="atlas-positioning-help">
+        <p>Positions are stored as normalized coordinates (0-1) that work regardless of map scale.</p>
+      </div>
+    )}
   </div>;
 }

@@ -35,3 +35,6 @@ database_backup.dump copy
 
 .continue/
 network-baseline.tar.gz
+
+.clinerules
+clinerules/

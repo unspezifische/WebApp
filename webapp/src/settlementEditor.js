@@ -320,41 +320,275 @@ export function snapBuildingPlacement(candidate, buildings, roads, snapDistance 
   return result;
 }
 
+
 export function createBuilding(asset, point, buildings, roads) {
   const candidate = {
-    id:`building-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
-    asset_key:asset.key,
-    name:asset.name,
-    x:point.x,
-    y:point.y,
-    elevation:0,
-    rotation:0,
-    width_feet:asset.width_feet,
-    depth_feet:asset.depth_feet,
-    rooms:[...(asset.rooms || [])],
-    front_road_id:null,
+    id: `building-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    asset_key: asset.key,
+    name: asset.name,
+    x: point.x,
+    y: point.y,
+    elevation: 0,
+    rotation: 0,
+    width_feet: asset.width_feet,
+    depth_feet: asset.depth_feet,
+    rooms: [...(asset.rooms || [])],
+    front_road_id: null,
   };
-  return snapBuildingPlacement(candidate,buildings,roads);
+  return snapBuildingPlacement(candidate, buildings, roads);
 }
 
-export function resizeBuildingFromCorner(building, point, corner, roads = []) {
-  const cos=Math.cos(building.rotation),sin=Math.sin(building.rotation);
-  const toLocal=(x,y)=>({x:x*cos+y*sin,y:-x*sin+y*cos});
-  const toWorld=(x,y)=>({x:x*cos-y*sin,y:x*sin+y*cos});
-  const localPoint=toLocal(point.x-building.x,point.y-building.y);
-  const opposite={x:-corner.x*building.width_feet/2,y:-corner.y*building.depth_feet/2};
-  const width=Math.max(16,Math.abs(localPoint.x-opposite.x));
-  const depth=Math.max(16,Math.abs(localPoint.y-opposite.y));
-  const centerLocal={x:(localPoint.x+opposite.x)/2,y:(localPoint.y+opposite.y)/2};
-  const shift=toWorld(centerLocal.x,centerLocal.y);
-  const resized={...building,x:building.x+shift.x,y:building.y+shift.y,width_feet:width,depth_feet:depth};
-  if (!building.front_road_id) return resized;
-  const frontage=(roads||[]).filter(road=>road.id===building.front_road_id);
-  const originalHit=nearestRoadPoint(building,frontage),resizedHit=nearestRoadPoint(resized,frontage);
-  if(!originalHit||!resizedHit)return resized;
-  const normal={x:-resizedHit.tangent.y,y:resizedHit.tangent.x};
-  const originalNormal={x:-originalHit.tangent.y,y:originalHit.tangent.x};
-  const side=((building.x-originalHit.point.x)*originalNormal.x+(building.y-originalHit.point.y)*originalNormal.y)>=0?1:-1;
-  const setback=resizedHit.width_feet/2+resized.depth_feet/2;
-  return {...resized,x:resizedHit.point.x+normal.x*side*setback,y:resizedHit.point.y+normal.y*side*setback};
+/**
+ * Resizes a building by moving one corner while keeping the opposite corner anchored.
+ */
+export function resizeBuildingFromCorner(building, newCornerPosition, cornerOffset, roads = []) {
+  const { x, y, width_feet, depth_feet, rotation } = building;
+
+  // Calculate the original corner positions
+  const halfWidth = width_feet / 2;
+  const halfDepth = depth_feet / 2;
+
+  // Apply rotation to get actual corner positions (simplified)
+  const cornerX = x + cornerOffset.x * halfWidth;
+  const cornerY = y + cornerOffset.y * halfDepth;
+
+  // Calculate the change in position
+  const dx = newCornerPosition.x - cornerX;
+  const dy = newCornerPosition.y - cornerY;
+
+  // Calculate new dimensions and position
+  let newWidth = width_feet;
+  let newDepth = depth_feet;
+  let newX = x;
+  let newY = y;
+
+  // Adjust based on which corner is being moved
+  if (cornerOffset.x > 0) {
+    // Moving right side
+    newWidth += dx * 2;  // Expand width to maintain the opposite side position
+  } else {
+    // Moving left side
+    newWidth -= dx * 2;
+  }
+
+  if (cornerOffset.y > 0) {
+    // Moving front side
+    newDepth += dy * 2;  // Expand depth to maintain the opposite side position
+  } else {
+    // Moving back side
+    newDepth -= dy * 2;
+  }
+
+  // Ensure dimensions are positive
+  newWidth = Math.max(10, newWidth);
+  newDepth = Math.max(10, newDepth);
+
+  // Adjust center position to keep the opposite corner in place
+  newX += (cornerOffset.x * halfWidth - (cornerOffset.x * newWidth / 2));
+  newY += (cornerOffset.y * halfDepth - (cornerOffset.y * newDepth / 2));
+
+  // Snap to roads if this is a road-facing building
+  if (building.front_road_id && roads.length > 0) {
+    const snapped = snapBuildingPlacement(
+      { ...building, x: newX, y: newY, width_feet: newWidth, depth_feet: newDepth },
+      [],
+      roads
+    );
+    return snapped;
+  }
+
+  return {
+    ...building,
+    x: newX,
+    y: newY,
+    width_feet: newWidth,
+    depth_feet: newDepth
+  };
 }
+
+// export function resizeBuildingFromCorner(building, point, corner, roads = []) {
+//   const cos = Math.cos(building.rotation), sin = Math.sin(building.rotation);
+//   const toLocal = (x, y) => ({ x: x * cos + y * sin, y: -x * sin + y * cos });
+//   const toWorld = (x, y) => ({ x: x * cos - y * sin, y: x * sin + y * cos });
+//   const localPoint = toLocal(point.x - building.x, point.y - building.y);
+//   const opposite = { x: -corner.x * building.width_feet / 2, y: -corner.y * building.depth_feet / 2 };
+//   const width = Math.max(16, Math.abs(localPoint.x - opposite.x));
+//   const depth = Math.max(16, Math.abs(localPoint.y - opposite.y));
+//   const centerLocal = { x: (localPoint.x + opposite.x) / 2, y: (localPoint.y + opposite.y) / 2 };
+//   const shift = toWorld(centerLocal.x, centerLocal.y);
+//   const resized = { ...building, x: building.x + shift.x, y: building.y + shift.y, width_feet: width, depth_feet: depth };
+//   if (!building.front_road_id) return resized;
+//   const frontage = (roads || []).filter(road => road.id === building.front_road_id);
+//   const originalHit = nearestRoadPoint(building, frontage), resizedHit = nearestRoadPoint(resized, frontage);
+//   if (!originalHit || !resizedHit) return resized;
+//   const normal = { x: -resizedHit.tangent.y, y: resizedHit.tangent.x };
+//   const originalNormal = { x: -originalHit.tangent.y, y: originalHit.tangent.x };
+//   const side = ((building.x - originalHit.point.x) * originalNormal.x + (building.y - originalHit.point.y) * originalNormal.y) >= 0 ? 1 : -1;
+//   const setback = resizedHit.width_feet / 2 + resized.depth_feet / 2;
+//   return { ...resized, x: resizedHit.point.x + normal.x * side * setback, y: resizedHit.point.y + normal.y * side * setback };
+// }
+
+/**
+ * Creates a default 256x256 heightmap with flat terrain
+ */
+export function createDefaultHeightmap() {
+  const gridSize = 256;
+  const grid_width = 256;
+  const grid_height = 256;
+  const values = new Float32Array(grid_width * grid_height);
+
+  // Initialize to flat terrain (all zeros)
+  for (let i = 0; i < values.length; i++) {
+    values[i] = 0;
+  }
+
+  return {
+    id: `heightmap-${Date.now()}`,
+    layer_type: 'heightmap',
+    name: 'Default Heightmap',
+    grid_width: grid_width,
+    grid_height: grid_height,
+    values,
+    width_feet: 1800,
+    height_feet: 1800,
+    origin_x: 0,
+    origin_y: 0,
+    min_elevation_feet: 0,
+    max_elevation_feet: 250,
+    strength: 1,
+    strength_pivot_feet: 0
+  };
+}
+
+
+/**
+ * Bakes a stroke into the heightmap grid using quadratic falloff
+ */
+export function bakeStrokeIntoHeightmap(heightmap, stroke) {
+  if (!heightmap || !heightmap.values || !stroke) return;
+  
+  const { x, y, radius, strength, mode, target_elevation_feet } = stroke;
+  const grid_width = heightmap.grid_width;
+  const grid_height = heightmap.grid_height;
+  const values = heightmap.values;
+  
+  // Convert world coordinates to grid indices
+  const width_feet = Number(heightmap.width_feet) || 1800;
+  const height_feet = Number(heightmap.height_feet) || 1800;
+  const origin_x = Number(heightmap.origin_x) || -900;
+  const origin_y = Number(heightmap.origin_y) || -900;
+  
+  // Convert world coordinates to normalized grid space
+  const u = (x - origin_x + width_feet / 2) / width_feet;
+  const v = 1 - (y - origin_y + height_feet / 2) / height_feet;
+  
+  if (u < 0 || u > 1 || v < 0 || v > 1) return; // Point outside bounds
+  
+  const gx = u * (grid_width - 1);
+  const gy = v * (grid_height - 1);
+  
+  // Determine the range of grid cells to update
+  const radius_cells = Math.max(1, Math.floor(radius / (width_feet / grid_width)));
+  const min_x = Math.max(0, Math.floor(gx - radius_cells));
+  const max_x = Math.min(grid_width - 1, Math.ceil(gx + radius_cells));
+  const min_y = Math.max(0, Math.floor(gy - radius_cells));
+  const max_y = Math.min(grid_height - 1, Math.ceil(gy + radius_cells));
+  
+  // Apply the stroke to each affected cell
+  for (let grid_y = min_y; grid_y <= max_y; grid_y++) {
+    for (let grid_x = min_x; grid_x <= max_x; grid_x++) {
+      const cell_x = (grid_x / (grid_width - 1)) * width_feet + origin_x;
+      const cell_y = (1 - grid_y / (grid_height - 1)) * height_feet + origin_y;
+      
+      const distance = Math.hypot(cell_x - x, cell_y - y);
+      if (distance >= radius) continue;
+      
+      // Quadratic falloff: (1 - (dist/radius)^2)^2
+      const normalized = 1 - (distance / radius) ** 2;
+      const falloff = Math.max(0, normalized * normalized);
+      
+      const cellIndex = grid_y * grid_width + grid_x;
+      
+      if (mode === 'flatten' || mode === 'smooth') {
+        // For flatten/smooth modes, blend with target elevation
+        const target = Number(target_elevation_feet);
+        const amount = Math.max(0, Math.min(1, Number(strength) || 0)) * falloff;
+        if (Number.isFinite(target)) {
+          values[cellIndex] = values[cellIndex] + (target - values[cellIndex]) * amount;
+        }
+      } else {
+        // For raise/lower modes
+        const delta = Number(stroke.delta || 0) * falloff * strength;
+        values[cellIndex] += delta;
+      }
+    }
+  }
+}
+
+// export function bakeStrokeIntoHeightmap(heightMap, stroke) {
+//   if (!heightMap || !stroke) return heightMap;
+
+//   const { values, grid_width, grid_height, origin_x, origin_y, width_feet, height_feet } = heightMap;
+//   const { x_feet, y_feet, radius_feet, strength, brush_type } = stroke;
+
+//   // Convert world coordinates to grid coordinates
+//   const gridX = Math.floor((x_feet - origin_x) / (width_feet / grid_width));
+//   const gridY = Math.floor((y_feet - origin_y) / (height_feet / grid_height));
+
+//   // Brush radius in grid units
+//   const brushRadiusGrid = radius_feet / (width_feet / grid_width);
+
+//   // Apply brush effect to grid cells
+//   for (let y = Math.max(0, gridY - Math.ceil(brushRadiusGrid)); y < Math.min(grid_height, gridY + Math.ceil(brushRadiusGrid)); y++) {
+//     for (let x = Math.max(0, gridX - Math.ceil(brushRadiusGrid)); x < Math.min(grid_width, gridX + Math.ceil(brushRadiusGrid)); x++) {
+//       const dx = x - gridX;
+//       const dy = y - gridY;
+//       const distance = Math.sqrt(dx * dx + dy * dy);
+
+//       // Calculate falloff based on distance
+//       let falloff = 1.0;
+//       if (distance > brushRadiusGrid) {
+//         falloff = 0.0;
+//       } else if (distance > brushRadiusGrid * 0.7) {
+//         // Smooth falloff for the last 30% of radius
+//         falloff = Math.pow(1 - (distance / brushRadiusGrid), 3);
+//       }
+
+//       if (falloff > 0) {
+//         const cellIndex = y * grid_width + x;
+//         let delta = 0;
+
+//         // Apply brush type and strength
+//         switch (brush_type) {
+//           case 'raise':
+//             delta = strength * falloff * 5; // Raise by 5 feet with strength applied
+//             break;
+//           case 'lower':
+//             delta = -strength * falloff * 5; // Lower by 5 feet with strength applied
+//             break;
+//           case 'flatten':
+//             // Flatten to a target height (e.g., 0 feet)
+//             delta = (0 - values[cellIndex]) * falloff * strength;
+//             break;
+//           case 'smooth':
+//             // Smooth by averaging with neighbors
+//             let total = 0;
+//             let count = 0;
+//             for (let ny = Math.max(0, y - 1); ny <= Math.min(grid_height - 1, y + 1); ny++) {
+//               for (let nx = Math.max(0, x - 1); nx <= Math.min(grid_width - 1, x + 1); nx++) {
+//                 total += values[ny * grid_width + nx];
+//                 count++;
+//               }
+//             }
+//             delta = (total / count - values[cellIndex]) * falloff * strength;
+//             break;
+//         }
+
+//         // Apply the change
+//         values[cellIndex] += delta;
+//       }
+//     }
+//   }
+
+//   return heightMap;
+// }

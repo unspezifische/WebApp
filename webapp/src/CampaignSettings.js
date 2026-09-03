@@ -7,10 +7,10 @@ import './CampaignSettings.css';
 
 export default function CampaignSettings({ campaignID, headers, embedded = false }) {
   const [settings,setSettings]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
-  const [showAdd,setShowAdd]=useState(false),[selectedKey,setSelectedKey]=useState(''),[preview,setPreview]=useState(null);
-  const [settlementStrategy,setSettlementStrategy]=useState('merge'),[calendarStrategy,setCalendarStrategy]=useState('keep_current');
-  const [installing,setInstalling]=useState(false),[notice,setNotice]=useState('');
-  const [iconSaving,setIconSaving]=useState(false),[iconInputKey,setIconInputKey]=useState(0);
+  const [showAdd,setShowAdd]=useState(false),[selectedKey,setSelectedKey]=useState(''),[preview,setPreview] = useState(null);
+  const [settlementStrategy,setSettlementStrategy]=useState('merge'),[calendarStrategy,setCalendarStrategy] = useState('keep_current');
+  const [installing,setInstalling]=useState(false),[notice,setNotice] = useState('');
+  const [iconSaving,setIconSaving]=useState(false),[iconInputKey,setIconInputKey] = useState(0);
   const [iconModalOpen,setIconModalOpen]=useState(false);
   const [rulesetSaving,setRulesetSaving]=useState(false);
   const [campaignName,setCampaignName]=useState(''),[nameSaving,setNameSaving]=useState(false);
