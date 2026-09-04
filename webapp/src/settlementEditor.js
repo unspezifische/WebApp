@@ -406,28 +406,6 @@ export function resizeBuildingFromCorner(building, newCornerPosition, cornerOffs
   };
 }
 
-// export function resizeBuildingFromCorner(building, point, corner, roads = []) {
-//   const cos = Math.cos(building.rotation), sin = Math.sin(building.rotation);
-//   const toLocal = (x, y) => ({ x: x * cos + y * sin, y: -x * sin + y * cos });
-//   const toWorld = (x, y) => ({ x: x * cos - y * sin, y: x * sin + y * cos });
-//   const localPoint = toLocal(point.x - building.x, point.y - building.y);
-//   const opposite = { x: -corner.x * building.width_feet / 2, y: -corner.y * building.depth_feet / 2 };
-//   const width = Math.max(16, Math.abs(localPoint.x - opposite.x));
-//   const depth = Math.max(16, Math.abs(localPoint.y - opposite.y));
-//   const centerLocal = { x: (localPoint.x + opposite.x) / 2, y: (localPoint.y + opposite.y) / 2 };
-//   const shift = toWorld(centerLocal.x, centerLocal.y);
-//   const resized = { ...building, x: building.x + shift.x, y: building.y + shift.y, width_feet: width, depth_feet: depth };
-//   if (!building.front_road_id) return resized;
-//   const frontage = (roads || []).filter(road => road.id === building.front_road_id);
-//   const originalHit = nearestRoadPoint(building, frontage), resizedHit = nearestRoadPoint(resized, frontage);
-//   if (!originalHit || !resizedHit) return resized;
-//   const normal = { x: -resizedHit.tangent.y, y: resizedHit.tangent.x };
-//   const originalNormal = { x: -originalHit.tangent.y, y: originalHit.tangent.x };
-//   const side = ((building.x - originalHit.point.x) * originalNormal.x + (building.y - originalHit.point.y) * originalNormal.y) >= 0 ? 1 : -1;
-//   const setback = resizedHit.width_feet / 2 + resized.depth_feet / 2;
-//   return { ...resized, x: resizedHit.point.x + normal.x * side * setback, y: resizedHit.point.y + normal.y * side * setback };
-// }
-
 /**
  * Creates a default 256x256 heightmap with flat terrain
  */
@@ -459,7 +437,6 @@ export function createDefaultHeightmap() {
     strength_pivot_feet: 0
   };
 }
-
 
 /**
  * Bakes a stroke into the heightmap grid using quadratic falloff
@@ -524,71 +501,3 @@ export function bakeStrokeIntoHeightmap(heightmap, stroke) {
     }
   }
 }
-
-// export function bakeStrokeIntoHeightmap(heightMap, stroke) {
-//   if (!heightMap || !stroke) return heightMap;
-
-//   const { values, grid_width, grid_height, origin_x, origin_y, width_feet, height_feet } = heightMap;
-//   const { x_feet, y_feet, radius_feet, strength, brush_type } = stroke;
-
-//   // Convert world coordinates to grid coordinates
-//   const gridX = Math.floor((x_feet - origin_x) / (width_feet / grid_width));
-//   const gridY = Math.floor((y_feet - origin_y) / (height_feet / grid_height));
-
-//   // Brush radius in grid units
-//   const brushRadiusGrid = radius_feet / (width_feet / grid_width);
-
-//   // Apply brush effect to grid cells
-//   for (let y = Math.max(0, gridY - Math.ceil(brushRadiusGrid)); y < Math.min(grid_height, gridY + Math.ceil(brushRadiusGrid)); y++) {
-//     for (let x = Math.max(0, gridX - Math.ceil(brushRadiusGrid)); x < Math.min(grid_width, gridX + Math.ceil(brushRadiusGrid)); x++) {
-//       const dx = x - gridX;
-//       const dy = y - gridY;
-//       const distance = Math.sqrt(dx * dx + dy * dy);
-
-//       // Calculate falloff based on distance
-//       let falloff = 1.0;
-//       if (distance > brushRadiusGrid) {
-//         falloff = 0.0;
-//       } else if (distance > brushRadiusGrid * 0.7) {
-//         // Smooth falloff for the last 30% of radius
-//         falloff = Math.pow(1 - (distance / brushRadiusGrid), 3);
-//       }
-
-//       if (falloff > 0) {
-//         const cellIndex = y * grid_width + x;
-//         let delta = 0;
-
-//         // Apply brush type and strength
-//         switch (brush_type) {
-//           case 'raise':
-//             delta = strength * falloff * 5; // Raise by 5 feet with strength applied
-//             break;
-//           case 'lower':
-//             delta = -strength * falloff * 5; // Lower by 5 feet with strength applied
-//             break;
-//           case 'flatten':
-//             // Flatten to a target height (e.g., 0 feet)
-//             delta = (0 - values[cellIndex]) * falloff * strength;
-//             break;
-//           case 'smooth':
-//             // Smooth by averaging with neighbors
-//             let total = 0;
-//             let count = 0;
-//             for (let ny = Math.max(0, y - 1); ny <= Math.min(grid_height - 1, y + 1); ny++) {
-//               for (let nx = Math.max(0, x - 1); nx <= Math.min(grid_width - 1, x + 1); nx++) {
-//                 total += values[ny * grid_width + nx];
-//                 count++;
-//               }
-//             }
-//             delta = (total / count - values[cellIndex]) * falloff * strength;
-//             break;
-//         }
-
-//         // Apply the change
-//         values[cellIndex] += delta;
-//       }
-//     }
-//   }
-
-//   return heightMap;
-// }

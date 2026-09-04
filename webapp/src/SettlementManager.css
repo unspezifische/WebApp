@@ -72,8 +72,9 @@
 .settlement-body {
   flex: 1;
   min-height: 0;
+  position: relative;
   display: grid;
-  grid-template-columns: 72px minmax(400px, 1fr)
+  grid-template-columns: minmax(0, 1fr)
 }
 
 .settlement-tools {
@@ -2199,8 +2200,8 @@
 
 @media(max-width:1000px) {
   .settlement-body {
-    grid-template-columns: 62px minmax(360px, 1fr) 260px
-  }
+      grid-template-columns: minmax(0, 1fr)
+    }
 
   .settlement-panel .stat-grid {
     grid-template-columns: 1fr
@@ -2217,8 +2218,8 @@
 
 @media(max-width:760px) {
   .settlement-body {
-    grid-template-columns: 54px 1fr
-  }
+      grid-template-columns: minmax(0, 1fr)
+    }
 
   .settlement-panel {
     display: none
@@ -3438,4 +3439,41 @@
 
 .location-search-selection button:hover {
   background: #2d4037;
+}
+
+/* Horizontal toolbar styles */
+.settlement-toolbar-horizontal {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 15;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid #526158;
+  border-radius: 6px;
+  background: #17231fee;
+}
+
+.settlement-toolbar-horizontal button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #405147;
+  border-radius: 4px;
+  background: #22332c;
+  color: #d9ded9;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.settlement-toolbar-horizontal button.active {
+  border-color: #c49b52;
+  background: #a87e3e;
+  color: #17211c;
+}
+
+.settlement-toolbar-horizontal button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
