@@ -361,6 +361,44 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
   const centerDmOn=location=>{if(location?.point)window.dispatchEvent(new CustomEvent('settlement-map-focus',{detail:location.point}));};
   const centerPlayerOnLocation=location=>{if(location?.point)sendPlayerCommand('focus',{point:location.point});};
   
+  // Custom function to calculate label scale based on zoom and screen density
+  const getLabelScale = (scale) => {
+    if (!scale || scale.feet <= 0) return 1;
+    
+    // Scale the label size inversely with feet per pixel (smaller feet/pixel = more zoomed in = larger labels)
+    const baseScale = 1.5; // Base scale factor for readability
+    // Apply logarithmic scaling to ensure appropriate scaling across wide range of zoom levels
+    return Math.min(3, baseScale / Math.log10(scale.feet / 100 + 1) + 0.5);
+  };
+  
+  const [scaleIndicator, setScaleIndicator] = useState({ feet: 100, pixels: 100 });
+  
+  // Event-based synchronization with SettlementMapEditor
+  useEffect(() => {
+    const handleScaleChange = (event) => {
+      setScaleIndicator(event.detail);
+    };
+    
+    window.addEventListener('settlement-map-scale-change', handleScaleChange);
+    
+    return () => {
+      window.removeEventListener('settlement-map-scale-change', handleScaleChange);
+    };
+  }, []);
+  
+  // Event-based synchronization with SettlementMapEditor
+  useEffect(() => {
+    const handleScaleChange = (event) => {
+      setScaleIndicator(event.detail);
+    };
+    
+    window.addEventListener('settlement-map-scale-change', handleScaleChange);
+    
+    return () => {
+      window.removeEventListener('settlement-map-scale-change', handleScaleChange);
+    };
+  }, []);
+  
   return <div className="settlement-sim">
     <header className="settlement-topbar">
       <div className="settlement-title">
@@ -403,7 +441,7 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
       </div>
     </header>
     <div className="settlement-body">
-      <aside className="settlement-toolbar-horizontal">
+      {activeTool !== 'atlas' && <aside className="settlement-toolbar-horizontal">
         <button className={activeTool==='atlas'?'active':''} onClick={()=>setActiveTool('atlas')} title="Atlas"><PublicIcon/></button>
         <button disabled={!designLoaded} className={activeTool==='inspect'?'active':''} onClick={()=>setActiveTool('inspect')} title="Inspect"><HomeWorkIcon/></button>
         <button disabled={!designLoaded} className={activeTool==='reference'?'active':''} onClick={()=>setActiveTool('reference')} title="Reference"><LayersIcon/></button>
@@ -415,7 +453,7 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
         <button disabled={!designLoaded} className={activeTool==='terrain'?'active':''} onClick={()=>setActiveTool('terrain')} title="Terrain"><ParkIcon/></button>
         <button disabled={!designLoaded} className={activeTool==='travel'?'active':''} onClick={()=>setActiveTool('travel')} title="Travel"><RouteIcon/></button>
         <button disabled={!designLoaded} className={activeTool==='economy'?'active':''} onClick={()=>setActiveTool('economy')} title="Economy"><StorefrontIcon/></button>
-      </aside>
+      </aside>}
       <main className="settlement-map" onClick={()=>setMapContext(null)}>
         {activeTool!=='atlas'&&mapLoading&&<MapLoading settlementName={settlementName}/>}
         {activeTool!=='atlas'&&designLoaded&&!mapLoading&&<Suspense fallback={<MapLoading settlementName={settlementName}/>}><SettlementMapEditor activeTool={activeTool} assets={assets} buildings={buildings} setBuildings={setBuildings} selected={selectedBuilding} setSelected={setSelected} buildingViewMode={buildingViewMode} roads={roads} setRoads={setRoads} strokes={terrainStrokes} setStrokes={setTerrainStrokes} heightMap={heightMap} setHeightMap={setHeightMap} waterBodies={waterBodies} setWaterBodies={setWaterBodies} mapEnvironment={mapEnvironment} setMapEnvironment={setMapEnvironment} setFortifications={setFortifications} dusk={(simulation.time?.hour??12)>=18||(simulation.time?.hour??12)<6} lamps={lamps} partyPosition={travelContext.party_position} destination={destination} onWaypoint={(point)=>chooseDestination({...point,map_key:atlas.locations.find(location=>location.id===activeSettlementId)?.map_key||'settlement',name:'Map waypoint',road_access:true,water_access:point.x>500})} referenceLayers={referenceLayers} onReferencePoint={recordCalibrationPoint} calibrationPoints={calibrationPoints} fitRequest={fitRequest} pointsOfInterest={travelContext.points_of_interest} campaignName={headers?.campaignName||headers?.CampaignName||''} onMapContext={setMapContext} onCameraChange={playerFollow?camera=>sendPlayerCommand('camera',{camera}):null}/></Suspense>}
