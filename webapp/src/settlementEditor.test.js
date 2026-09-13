@@ -1,4 +1,5 @@
 import { calibrateReferenceLayer, createTerrainHeightSampler, firstPersonLookAngles, heightmapHeightAt, insertClosedBoundaryPoint, insertRoadControlPoint, nearestRoadPoint, pitchPositionAroundTarget, referenceLayerUv, resizeBuildingFromCorner, roadWidthAt, rotatePositionAroundVerticalAxis, snapBuildingPlacement, snapRegionBoundaryPoint, snapRoadNetworkPoint, snapRoadSplineTranslation, terrainHeightAt, terrainSurfaceWeights, waterDepthAtSeaLevel, waterFlowSpeed } from './settlementEditor';
+import { babylonToWorld, fortificationVertexData, roadVertexData, terrainVertexData, worldToBabylon } from './settlementBabylon';
 
 test('camera rotation preserves radius and opposite turns restore the position', () => {
   const target={x:3,y:0,z:-2},position={x:13,y:15,z:8};
@@ -42,6 +43,28 @@ test('first-person mouse look follows conventional axes and supports inversion',
   const inverted=firstPersonLookAngles(0,0,10,-10,{sensitivity:50,invertX:true,invertY:true});
   expect(inverted.yaw).toBeLessThan(0);
   expect(inverted.pitch).toBeLessThan(0);
+});
+
+test('Babylon coordinate transforms preserve world feet and elevation', () => {
+  const point = worldToBabylon(125, -75, 40);
+  expect(babylonToWorld(point)).toEqual({ x: 125, y: -75, elevation: 40 });
+});
+
+test('Babylon terrain and road geometry produce indexed vertex buffers', () => {
+  const bounds = { minX: -100, maxX: 100, minY: -100, maxY: 100, width: 200, height: 200 };
+  const terrain = terrainVertexData([], bounds, null);
+  const road = roadVertexData({ width_feet: 20, points: [{ x: -50, y: 0 }, { x: 50, y: 0 }] }, [], null);
+  expect(terrain.positions.length).toBeGreaterThan(0);
+  expect(terrain.indices.length).toBeGreaterThan(0);
+  expect(road.positions.length).toBeGreaterThan(0);
+  expect(road.indices.length).toBeGreaterThan(0);
+});
+
+test('Babylon fortification geometry produces an elevated indexed wall buffer', () => {
+  const wall = fortificationVertexData({ width_feet: 20, height_feet: 40, points: [{ x: -50, y: 0 }, { x: 50, y: 0 }] }, [], null);
+  expect(wall.positions.length).toBeGreaterThan(0);
+  expect(wall.indices.length).toBeGreaterThan(0);
+  expect(Math.max(...wall.positions.filter((_, index) => index % 3 === 1))).toBeCloseTo(.8);
 });
 
 test('terrain strokes blend smoothly and stop at their radius', () => {

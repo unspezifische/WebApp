@@ -4,6 +4,12 @@ FROM node:18-alpine AS build
 # Set the working directory
 WORKDIR /app
 
+# INCREASE NODE MEMORY LIMIT HERE (4096 = 4GB, 6144 = 6GB)
+ENV NODE_OPTIONS="--max-old-space-size=6144"
+
+# CRITICAL: Disable source maps to save massive amounts of RAM during build
+ENV GENERATE_SOURCEMAP=false
+
 # Copy package.json and install dependencies (paths are relative to build context)
 COPY webapp/package*.json ./
 

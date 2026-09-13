@@ -282,3 +282,50 @@ catalog, so NPCs are announced in the UI before install.
 Reference modules: `waterdeep_dragon_heist` (full: definition + calendar + settlement +
 media + wiki + NPCs) and `lost_mine_of_phandelver` (minimal: definition + calendar).
 
+---
+
+## Campaign bundles (`bundle.sh` / `flask import-module`)
+
+Separate from the code-defined modules above, `<repo root>/bundle.sh` packages a
+campaign's *data* (rows tagged with a given `source`) into a redistributable folder here:
+
+```
+Flask/modules/<module_name>/
+  ├─ manifest.json      # module_name, source_campaign, exported_from_host, exported_at
+  ├─ npcs.json          # NPC rows (source == module_name, scoped to the source campaign)
+  ├─ settlements.json   # WorldAtlasLocation rows (same scoping)
+  ├─ items.json         # Item rows (source == module_name; items aren't campaign-scoped)
+  ├─ loot_boxes.json
+  ├─ calendar_events.json
+  └─ wiki_pages/*.md
+```
+
+Build one with:
+
+```
+./bundle.sh --campaignName "<campaign>" --moduleName "<module_name>" --hostname <host>
+```
+
+`publish.sh --modules` (or `--all`) rsyncs everything under `Flask/modules/` to the
+target server and confirms the `flask import-module` command is available there.
+Publishing never installs a bundle into a campaign automatically — installation is
+per-campaign and idempotent, run on the target server:
+
+```
+flask import-module --module-name "<module_name>" --campaign-name "<target campaign>"
+```
+
+`publish.sh --docker` targets the local docker-compose stack instead of the
+bare-metal Pi (that stack only runs locally; the Pi is bare-metal, so `--nginx`
+and `--mtg` can't be combined with `--docker`). Since `docker-compose.yaml` bind-mounts
+`./Flask` into the `flask` container, bundles are already visible inside it — `--docker
+--modules` just verifies `flask import-module` works there. Install a bundle locally with:
+
+```
+docker compose exec flask flask import-module --module-name "<module_name>" --campaign-name "<target campaign>"
+```
+
+Rows are matched by `(campaign_id, source, name)` for NPCs/settlements and
+`(source, name)` for items, so re-running the command against the same campaign
+updates existing rows instead of duplicating them.
+

@@ -1,31 +1,52 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
+
+import ExitToAppIcon from '@mui/icons-material/ExitToApp';  // Icon for Exit tool
+
+import PublicIcon from '@mui/icons-material/Public';      // Icon for Atlas tool
+import HomeWorkIcon from '@mui/icons-material/HomeWork';  // Icon for Inspector tool
+import CompareIcon from '@mui/icons-material/Compare';    // Icon for Reference tool
+import EditRoadIcon from '@mui/icons-material/EditRoad';  // Icon for Roads tool
+import FenceIcon from '@mui/icons-material/Fence';        // Icon for Walls tool
+import WaterIcon from '@mui/icons-material/Water';        // Icon for Water tool
+import PolylineIcon from '@mui/icons-material/Polyline';  // Icon for Regions tool
+import AddBusinessIcon from '@mui/icons-material/AddBusiness';  // Icon for Build tool
+import TerrainIcon from '@mui/icons-material/Terrain';    // Icon for Terrain tool
+import RouteIcon from '@mui/icons-material/Route';        // Icon for Travel
+import StorefrontIcon from '@mui/icons-material/Storefront';  // Icon for Economy tool
+import CloudIcon from '@mui/icons-material/Cloud';            // Icon for Atmosphere tool
+import ThunderstormIcon from '@mui/icons-material/Thunderstorm';  // Icon for Weather tool
+import ScheduleIcon from '@mui/icons-material/Schedule';          // Icon for Time of Day
+
+import CasinoIcon from '@mui/icons-material/Casino';  // Icon for Random Generation functions
+import AgricultureIcon from '@mui/icons-material/Agriculture';  // Icon for Agriculture tool (to be implemented- manages farms?)
+
+// Time of Day Control Panel icons
+import FastRewindIcon from '@mui/icons-material/FastRewind';  // For large negative jumps
+import FastForwardIcon from '@mui/icons-material/FastForward'; // For large positive jumps
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';    // For standard small reverse jumps
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward'; // For standard small forward jumps
+import CalendarTodayIcon from '@mui/icons-material/CalendarToday'; // For day-based jumps
+
+
+// Miscellaneous other icons
 import AddIcon from '@mui/icons-material/Add';
-import ParkIcon from '@mui/icons-material/Park';
-import HomeWorkIcon from '@mui/icons-material/HomeWork';
-import AgricultureIcon from '@mui/icons-material/Agriculture';
 import GroupsIcon from '@mui/icons-material/Groups';
-import RouteIcon from '@mui/icons-material/Route';
-import StorefrontIcon from '@mui/icons-material/Storefront';
-import LayersIcon from '@mui/icons-material/Layers';
-import ExitToAppIcon from '@mui/icons-material/ExitToApp';
-import PublicIcon from '@mui/icons-material/Public';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
-import WaterIcon from '@mui/icons-material/Water';
-import FenceIcon from '@mui/icons-material/Fence';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import EditIcon from '@mui/icons-material/Edit';
-import CasinoIcon from '@mui/icons-material/Casino';
-import BoltIcon from '@mui/icons-material/Bolt';
 import CloseIcon from '@mui/icons-material/Close';
+
 import { calibrateReferenceLayer, FALLBACK_ASSET_CATALOG, createDefaultHeightmap, bakeStrokeIntoHeightmap } from './settlementEditor';
 import { searchSettlementLocations, settlementSearchLocations } from './settlementSearch';
 import AtlasViewport from './AtlasViewport';
 import './SettlementManager.css';
+import './SettlementToolPanels.css';
 
 const SettlementMapEditor = lazy(() => import('./SettlementMapEditor'));
+// The MapEditor file provides the actual tool implementation. This file (SettlementManager) just provides the UI
 
 async function readReferenceImageDimensions(file) {
   const bytes = new Uint8Array(await file.slice(0, 512 * 1024).arrayBuffer());
@@ -71,73 +92,177 @@ function MapLoading({ settlementName }) {
 }
 
 export default function SettlementManager({ headers, socket, mainEnvironmentUrl = '/', initialTool = 'atlas' }) {
-  const [day,setDay] = useState(24), [running,setRunning] = useState(false), [speed,setSpeed] = useState(1);
+  const [localViewCommand, setLocalViewCommand] = useState({ mode: 'camera', nonce: Date.now() });
+  const activeViewCommand = localViewCommand;
+
+  const [day, setDay] = useState(24)
+  const [running, setRunning] = useState(false)
+  const [speed,setSpeed] = useState(1);
   const requestedTool=new URLSearchParams(window.location.search).get('tool');
-  const [buildings,setBuildings] = useState([]), [selected,setSelected] = useState(null), [activeTool,setActiveTool] = useState(requestedTool==='atlas'?'atlas':initialTool);
-  const [roads,setRoads] = useState([]), [terrainStrokes,setTerrainStrokes] = useState([]), [heightMap,setHeightMap] = useState(null), [waterBodies,setWaterBodies] = useState([]), [mapEnvironment,setMapEnvironment] = useState({sea_level_feet:0,terrain_material:{snow_line_feet:900,snow_blend_feet:500,cliff_normal_threshold:.86},regions:[]}), [assets,setAssets] = useState(FALLBACK_ASSET_CATALOG);
+  const [buildings, setBuildings] = useState([])
+
+  const [selected, setSelected] = useState(null)
+  const [inspectSelection, setInspectSelection] = useState(null);
+
+  const [activeTool,setActiveTool] = useState(requestedTool==='atlas'?'atlas':initialTool);
+  const [roads, setRoads] = useState([])
+  const [terrainStrokes, setTerrainStrokes] = useState([])
+  const [heightMap, setHeightMap] = useState(null)
+  const [waterBodies,setWaterBodies] = useState([]);
+  const [mapEnvironment,setMapEnvironment] = useState({
+    sea_level_feet:0,
+    terrain_material:{
+      snow_line_feet:900,
+      snow_blend_feet:500,
+      cliff_normal_threshold:.86
+    },
+    regions:[]
+  }), [assets,setAssets] = useState(FALLBACK_ASSET_CATALOG);
+
   const setFortifications=useCallback(updater=>setMapEnvironment(environment=>({...environment,fortifications:typeof updater==='function'?updater(environment.fortifications||[]):updater})),[]);
-  const [referenceLayers,setReferenceLayers] = useState([]), [selectedReferenceId,setSelectedReferenceId] = useState(null);
-  const [calibrationPoints,setCalibrationPoints] = useState([]), [knownDistance,setKnownDistance] = useState(471), [fitRequest,setFitRequest] = useState(0);
-  const [referenceUpload,setReferenceUpload] = useState({file:null,name:'',width_feet:1800,height_feet:1800,origin_x:0,origin_y:0,scope:'city',linked_building_id:'',sync_exterior:false}), [uploadStatus,setUploadStatus] = useState('');
-  const [designLoaded,setDesignLoaded] = useState(false), [mapLoading,setMapLoading] = useState(false), [saveStatus,setSaveStatus] = useState('Choose a settlement');
+  const [referenceLayers, setReferenceLayers] = useState([])
+  const [selectedReferenceId,setSelectedReferenceId] = useState(null);
+  const [calibrationPoints, setCalibrationPoints] = useState([])
+  const [knownDistance, setKnownDistance] = useState(471)
+  const [fitRequest, setFitRequest] = useState(0);
+  const [referenceUpload, setReferenceUpload] = useState({
+    file:null,name:'',
+    width_feet:1800,
+    height_feet:1800,
+    origin_x:0,
+    origin_y:0,
+    scope:'city',
+    linked_building_id:'',
+    sync_exterior:false
+  })
+  const [uploadStatus, setUploadStatus] = useState('');
+  const [designLoaded, setDesignLoaded] = useState(false)
+  const [mapLoading, setMapLoading] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('Choose a settlement');
+
+  const [activeCalendar, setActiveCalendar] = useState(null);
+  const [manualDate, setManualDate] = useState({ year: 1492, month_index: 0, day: 1, hour: 12, minute: 0 });
+
+
   const eventLog = mapEnvironment.events||[];
-  const [simulation,setSimulation] = useState({ time:{day:24,hour:12,minute:0}, routes:[] });
+
+  const [atmosphereSettings, setAtmosphereSettings] = useState({
+    sunIntensity: 2.2,
+    moonIntensity: 0.15,
+    scatteringScale: 1.0
+  });
+
+  const [weatherSettings, setWeatherSettings] = useState({
+    activeWeather: 'clear',
+    fogDensity: 0.01,
+    fogColor: '#a9c9dc'
+  });
+
+  const [simulation,setSimulation] = useState({ time:{day:1,hour:12,minute:0}, routes:[] });
   const [travelContext,setTravelContext] = useState({party_position:null,points_of_interest:[]});
-  const [destination,setDestination] = useState(null), [travelPlan,setTravelPlan] = useState(null), [partySize,setPartySize] = useState(4);
-  const [economy,setEconomy] = useState({day_index:0,markets:[],businesses:[],history:{}}), [selectedBusinessId,setSelectedBusinessId] = useState(null);
+  const [destination,setDestination] = useState(null)
+  const [travelPlan,setTravelPlan] = useState(null);
+  const [partySize,setPartySize] = useState(4);
+  const [economy,setEconomy] = useState({day_index:0,markets:[],businesses:[],history:{}}); 
+  const [selectedBusinessId,setSelectedBusinessId] = useState(null);
   const [commodityQuantity,setCommodityQuantity] = useState(25);
   const [atlas,setAtlas] = useState({atlas:{key:'blank',name:'Campaign World'},locations:[]});
   const [atlasUpload,setAtlasUpload] = useState({file:null,attribution:'',settingDefault:false});
-  const [activeSettlementId,setActiveSettlementId] = useState(null), [settlementName,setSettlementName] = useState('World Atlas');
-  const [movingAtlasId,setMovingAtlasId] = useState(null), [showAtlasUpload,setShowAtlasUpload] = useState(false);
-  const [newSettlementName,setNewSettlementName] = useState(''), [atlasStatus,setAtlasStatus] = useState('Loading World Atlas…');
-  const [playerFollow,setPlayerFollow] = useState(false), [playerLabels,setPlayerLabels] = useState([]), [showAllPlayerLabels,setShowAllPlayerLabels] = useState(false), [mapContext,setMapContext] = useState(null), [firstPerson,setFirstPerson] = useState(false);
+  const [activeSettlementId,setActiveSettlementId] = useState(null);
+  const [settlementName,setSettlementName] = useState('World Atlas');
+  const [movingAtlasId,setMovingAtlasId] = useState(null);
+  const [showAtlasUpload,setShowAtlasUpload] = useState(false);
+  const [newSettlementName,setNewSettlementName] = useState('');
+  const [atlasStatus,setAtlasStatus] = useState('Loading World Atlas…');
+  const [playerFollow,setPlayerFollow] = useState(false);
+  const [playerLabels,setPlayerLabels] = useState([]);
+  const [showAllPlayerLabels,setShowAllPlayerLabels] = useState(false);
+  const [mapContext,setMapContext] = useState(null);
+  const [firstPerson,setFirstPerson] = useState(false);
   
   useEffect(()=>{
     const syncFirstPerson=(event)=>setFirstPerson(Boolean(event?.detail));
     window.addEventListener('settlement-first-person-change',syncFirstPerson);
     return ()=>window.removeEventListener('settlement-first-person-change',syncFirstPerson);
   },[]);
-  const [locationSearch,setLocationSearch] = useState(''), [selectedLocationId,setSelectedLocationId] = useState(null);
-  const [buildingViewMode,setBuildingViewMode]=useState('satellite'),[buildingEditDraft,setBuildingEditDraft]=useState(null),[buildingEvents,setBuildingEvents]=useState(null);
+  
+  const [locationSearch,setLocationSearch] = useState('');
+  const [selectedLocationId,setSelectedLocationId] = useState(null);
+
+  const [buildingViewMode,setBuildingViewMode]=useState('satellite');
+  const [buildingEditDraft,setBuildingEditDraft]=useState(null);
+  const [buildingEvents,setBuildingEvents]=useState(null);
   const bootstrappedCampaign=useRef(null);
-  const campaignId = headers?.campaignID || headers?.CampaignID;
-  const uploadAtlasImage=async event=>{event.preventDefault();if(!atlasUpload.file)return;const formElement=event.currentTarget;const form=new FormData();form.append('file',atlasUpload.file);form.append('name',atlas.atlas?.name||'Campaign World');form.append('attribution',atlasUpload.attribution);form.append('setting_default','false');setAtlasStatus('Uploading atlas to PostgreSQL…');try{const response=await axios.post(`/api/world-atlas/${campaignId}/image`,form,{headers});setAtlas(value=>({...value,atlas:response.data}));setAtlasUpload({file:null,attribution:'',settingDefault:false});setAtlasStatus('Atlas image stored privately in the campaign database.');formElement.reset();}catch(error){setAtlasStatus(error.response?.data?.message||'Unable to upload atlas image.');}};
+
+  const campaignId = String(headers?.campaignID || headers?.CampaignID || '');
+
+  const uploadAtlasImage=async event=>{event.preventDefault(); if(!atlasUpload.file) return; const formElement = event.currentTarget; const form=new FormData(); form.append('file',atlasUpload.file); form.append('name',atlas.atlas?.name||'Campaign World');form.append('attribution',atlasUpload.attribution);form.append('setting_default','false');setAtlasStatus('Uploading atlas to PostgreSQL…');try{const response=await axios.post(`/api/world-atlas/${campaignId}/image`,form,{headers});setAtlas(value=>({...value,atlas:response.data}));setAtlasUpload({file:null,attribution:'',settingDefault:false});setAtlasStatus('Atlas image stored privately in the campaign database.');formElement.reset();}catch(error){setAtlasStatus(error.response?.data?.message||'Unable to upload atlas image.');}};
+
   const sendPlayerCommand=useCallback((action,payload={})=>{if(!socket||!campaignId||!activeSettlementId)return;socket.emit('settlement_player_command',{campaign_id:Number(campaignId),settlement_id:Number(activeSettlementId),action,...payload});},[socket,campaignId,activeSettlementId]);
+
   const openPlayerView=()=>{
     const labels=playerLabels.join(','),params=new URLSearchParams({campaignID:String(campaignId||''),settlementID:String(activeSettlementId||''),campaignName:headers?.campaignName||'',accountType:'DM'});
     if(labels)params.set('labels',labels);if(showAllPlayerLabels)params.set('showAllLabels','1');
     window.open(`/maps/player?${params.toString()}`,'kachhapa-settlement-player','noopener');
   };
   const centerPlayerOn=point=>{if(point)sendPlayerCommand('focus',{point});setMapContext(null);};
+
   const setBuildingLabel=(building,visible)=>{const id=String(building.id);setPlayerLabels(values=>visible?[...new Set([...values,id])]:values.filter(value=>value!==id));sendPlayerCommand('label',{building_id:id,visible});setMapContext(null);};
   useEffect(()=>{setPlayerLabels([]);setShowAllPlayerLabels(false);setMapContext(null);setSelectedLocationId(null);setLocationSearch('');},[activeSettlementId]);
+
   const applyMap = useCallback((map) => {
-    const allLayers=map.reference_layers||[],mapHeightMap=allLayers.find(layer=>layer.layer_type==='heightmap')||null,visualLayers=allLayers.filter(layer=>layer.layer_type!=='heightmap').map(layer=>({...layer,visible:layer.visible!==false,opacity:Number.isFinite(Number(layer.opacity))?Number(layer.opacity):.7,project_to_terrain:layer.project_to_terrain!==false}));
-    setBuildings(map.buildings||[]);setRoads(map.roads||[]);setTerrainStrokes(map.terrain_strokes||[]);setWaterBodies(map.water_bodies||[]);setMapEnvironment(map.environment||{sea_level_feet:0,terrain_material:{snow_line_feet:900,snow_blend_feet:500,cliff_normal_threshold:.86},regions:[]});
-    
-    // Migration logic for legacy heightmaps
+    const allLayers = map.reference_layers || [];
+    const mapHeightMap = allLayers.find(layer => layer.layer_type === 'heightmap') || null;
+    const visualLayers = allLayers.filter(layer => layer.layer_type !== 'heightmap').map(layer => ({
+      ...layer,
+      visible: layer.visible !== false,
+      opacity: Number.isFinite(Number(layer.opacity)) ? Number(layer.opacity) : .7,
+      project_to_terrain: layer.project_to_terrain !== false
+    }));
+
+    setBuildings(map.buildings || []);
+    setRoads(map.roads || []);
+    setWaterBodies(map.water_bodies || []);
+    setMapEnvironment(map.environment || {
+      sea_level_feet: 0,
+      terrain_material: { snow_line_feet: 900, snow_blend_feet: 500, cliff_normal_threshold: .86 },
+      regions: []
+    });
+
+    // MIGRATION LOGIC & FLOAT32ARRAY PARSING
     if (map.terrain_strokes && map.terrain_strokes.length > 0 && !mapHeightMap) {
-      // Create a default heightmap and migrate strokes into it
+      // 1. Legacy Data: Create a default heightmap and bake old strokes into it
       const defaultHeightmap = createDefaultHeightmap();
-      
-      // Apply all legacy strokes to the new heightmap
       map.terrain_strokes.forEach(stroke => {
         bakeStrokeIntoHeightmap(defaultHeightmap, stroke);
       });
-      
-      setHeightMap(defaultHeightmap);
-      setTerrainStrokes([]); // Clear legacy strokes after migration
-    } else {
+      setHeightMap(defaultHeightmap); // Triggers the save useEffect to permanently upgrade the DB
+    } else if (mapHeightMap) {
+      // 2. Modern Data: Ensure the values are a Float32Array for performance
+      if (mapHeightMap.values && !(mapHeightMap.values instanceof Float32Array)) {
+        mapHeightMap.values = new Float32Array(mapHeightMap.values);
+      }
       setHeightMap(mapHeightMap);
+    } else {
+      setHeightMap(null);
     }
-    
-    setReferenceLayers(visualLayers);setSelectedReferenceId(visualLayers[0]?.id||null);
-    if(visualLayers.length)setFitRequest(value=>value+1);
-    setAssets(map.asset_catalog?.length?map.asset_catalog:FALLBACK_ASSET_CATALOG);
-    setSelected(map.buildings?.[0]||null);setActiveSettlementId(map.settlement_id);setSettlementName(map.name||'New Settlement');
-    setDesignLoaded(true);setSaveStatus('Saved');
+
+    setReferenceLayers(visualLayers);
+    setSelectedReferenceId(visualLayers[0]?.id || null);
+    if (visualLayers.length) setFitRequest(value => value + 1);
+
+    setAssets(map.asset_catalog?.length ? map.asset_catalog : FALLBACK_ASSET_CATALOG);
+    setSelected(map.buildings?.[0] || null);
+    setActiveSettlementId(map.settlement_id);
+    setSettlementName(map.name || 'New Settlement');
+
+    setDesignLoaded(true);
+    setSaveStatus('Saved');
+    setAtmosphereSettings(map.environment?.atmosphere || { sunIntensity: 2.2, moonIntensity: 0.15, scatteringScale: 1.0 });
+    setWeatherSettings(map.environment?.weather || { activeWeather: 'clear', fogDensity: 0.01, fogColor: '#a9c9dc' });
   }, []);
+
+  
   const openSettlement = useCallback(async (settlementId) => {
     if(!campaignId||!settlementId)return;
     const location=atlas.locations.find(item=>item.id===Number(settlementId));
@@ -153,13 +278,43 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
       setMapLoading(false);
     }
   },[campaignId,headers,applyMap,atlas.locations]);
+
   const applySimulation = useCallback((state) => { setSimulation(state); if (state?.time?.day) setDay(state.time.day); }, []);
+
   const advanceTime = useCallback(async (minutes) => {
     if (!campaignId) return;
+
     await axios.post(`/api/calendar/${campaignId}/date/advance`, { minutes }, { headers });
     const response = await axios.get(`/api/settlement-simulation/${campaignId}`, { headers });
     applySimulation(response.data);
+
+    if (response.data?.time) {
+      setLocalViewCommand(currentCommand => {
+        // Safe check using our established local view state configuration
+        const activeMode = currentCommand?.mode || 'camera';
+
+        const nextCommand = {
+          mode: activeMode,
+          nonce: Date.now(),
+          time: {
+            year: response.data.time.year,
+            month_index: response.data.time.month_index,
+            day: response.data.time.day,
+            hour: response.data.time.hour,
+            minute: response.data.time.minute
+          }
+        };
+
+        window.dispatchEvent(new CustomEvent('settlement-camera-command-trigger', {
+          detail: nextCommand
+        }));
+
+        return nextCommand;
+      });
+    }
   }, [campaignId, headers, applySimulation]);
+
+
   useEffect(() => {
     if (!campaignId) return undefined;
     let active = true;
@@ -196,24 +351,25 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
       bootstrappedCampaign.current=null;
       console.error('Unable to bootstrap settlement simulation:', error);
     });};
-    // Let React Three Fiber present the first map frame before campaign economy
-    // and travel bootstrap work begins on the same Pi.
     const idleId=window.requestIdleCallback?.(bootstrap,{timeout:1600});
     const timeoutId=idleId==null?window.setTimeout(bootstrap,500):null;
     return () => { active=false;if(!started)bootstrappedCampaign.current=null;if(idleId!=null)window.cancelIdleCallback?.(idleId);if(timeoutId!=null)window.clearTimeout(timeoutId); };
   }, [campaignId, activeSettlementId, headers, applySimulation]);
+
   useEffect(() => {
     if (!socket) return undefined;
     const update = (state) => { if (!campaignId || state.campaign_id === Number(campaignId)) applySimulation(state); };
     socket.on('settlement_simulation_updated', update);
     return () => socket.off('settlement_simulation_updated', update);
   }, [socket,campaignId,applySimulation]);
+
   useEffect(() => {
     if (!socket) return undefined;
     const updateParty = (position) => setTravelContext((value) => ({...value,party_position:position}));
     socket.on('party_position_updated', updateParty);
     return () => socket.off('party_position_updated', updateParty);
   }, [socket]);
+
   useEffect(() => {
     if (!socket) return undefined;
     const updateAtlas = (event) => {
@@ -223,6 +379,7 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
     socket.on('world_atlas_updated',updateAtlas);
     return()=>socket.off('world_atlas_updated',updateAtlas);
   },[socket,campaignId]);
+
   useEffect(()=>{
     setReferenceLayers(layers=>{let changed=false;const nextLayers=layers.map(layer=>{
       if(!layer.sync_exterior||!layer.linked_building_id)return layer;
@@ -233,47 +390,195 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
       changed=true;return next;
     });return changed?nextLayers:layers;});
   },[buildings]);
+
   useEffect(() => {
-    if(!designLoaded||!campaignId||!activeSettlementId)return undefined;
+    if (!designLoaded || !campaignId || !activeSettlementId) return undefined;
     setSaveStatus('Unsaved changes');
-    const timer=window.setTimeout(()=>{
+
+    const timer = window.setTimeout(() => {
       setSaveStatus('Saving…');
-      axios.put(`/api/settlement-map/${campaignId}`,{settlement_id:activeSettlementId,roads,buildings,water_bodies:waterBodies,environment:mapEnvironment,reference_layers:[...referenceLayers,...(heightMap?[heightMap]:[])]},{headers})
-        .then(()=>setSaveStatus('Saved'))
-        .catch((error)=>{console.error('Unable to save settlement map:',error);setSaveStatus('Save failed');});
-    },700);
-    return()=>window.clearTimeout(timer);
-  },[designLoaded,campaignId,activeSettlementId,headers,terrainStrokes,heightMap,roads,buildings,waterBodies,mapEnvironment,referenceLayers]);
+
+      // PREPARE THE NEW PAYLOAD STRUCTURE
+      const payload = {
+        settlement_id: activeSettlementId,
+        terrain_strokes: [], // Clear legacy strokes to prevent DB bloat
+        roads,
+        buildings,
+        water_bodies: waterBodies,
+        environment: {
+          ...mapEnvironment,
+          atmosphere: atmosphereSettings,
+          weather: weatherSettings
+        },
+        weather: weatherSettings,
+        reference_layers: [...referenceLayers] // Base visual layers
+      };
+
+      // SERIALIZE THE HEIGHTMAP INTO THE REFERENCE LAYERS
+      if (heightMap) {
+        const heightmapLayer = {
+          id: heightMap.id || `heightmap-${Date.now()}`,
+          layer_type: 'heightmap',
+          name: heightMap.name || 'Sculpted Terrain',
+          grid_width: heightMap.grid_width,
+          grid_height: heightMap.grid_height,
+          values: Array.from(heightMap.values), // Convert Float32Array to standard Array for JSON
+          width_feet: heightMap.width_feet,
+          height_feet: heightMap.height_feet,
+          origin_x: heightMap.origin_x,
+          origin_y: heightMap.origin_y,
+          min_elevation_feet: heightMap.min_elevation_feet,
+          max_elevation_feet: heightMap.max_elevation_feet,
+        };
+        payload.reference_layers.push(heightmapLayer);
+      }
+
+      axios.put(`/api/settlement-map/${campaignId}`, payload, { headers })
+        .then(() => setSaveStatus('Saved'))
+        .catch((error) => {
+          console.error('Unable to save settlement map:', error);
+          setSaveStatus('Save failed');
+        });
+    }, 700);
+
+    return () => window.clearTimeout(timer);
+  }, [designLoaded, referenceLayers, campaignId, activeSettlementId, headers, terrainStrokes, heightMap, roads, buildings, waterBodies, mapEnvironment, atmosphereSettings, weatherSettings]);
+
+  useEffect(() => {
+    const handleRelativeTime = async (e) => {
+      try {
+        const minutesToShift = Number(e.detail.minutes) || 0;
+        await advanceTime(minutesToShift);
+      } catch (err) {
+        console.error('Failed to update calendar relative bounds:', err);
+      }
+    };
+
+    const handleAbsoluteTime = async (e) => {
+      try {
+        if (!campaignId) return;
+        const { hour, minute, day, year, month_index } = e.detail;
+
+        await axios.patch(`/api/calendar/${campaignId}/date/set`, { hour, minute, day, year, month_index }, { headers });
+        const response = await axios.get(`/api/settlement-simulation/${campaignId}`, { headers });
+        applySimulation(response.data);
+
+        setLocalViewCommand(currentCommand => {
+          const activeMode = currentCommand?.mode || 'camera';
+
+          const nextCommand = {
+            mode: activeMode,
+            nonce: Date.now(),
+            time: { hour, minute, day, year, month_index }
+          };
+
+          window.dispatchEvent(new CustomEvent('settlement-camera-command-trigger', {
+            detail: nextCommand
+          }));
+
+          return nextCommand;
+        });
+      } catch (err) {
+        console.error('Failed to save manual target calendar parameters:', err);
+      }
+    };
+
+
+    window.addEventListener('settlement-time-advance-request', handleRelativeTime);
+    window.addEventListener('settlement-time-absolute-request', handleAbsoluteTime);
+    return () => {
+      window.removeEventListener('settlement-time-advance-request', handleRelativeTime);
+      window.removeEventListener('settlement-time-absolute-request', handleAbsoluteTime);
+    };
+  }, [campaignId, headers, advanceTime, applySimulation]);
+
+
+
   useEffect(() => {
     if(!socket) return undefined;
     const updateEconomy=(state)=>setEconomy(state);
     socket.on('settlement_economy_updated',updateEconomy);
     return()=>socket.off('settlement_economy_updated',updateEconomy);
   },[socket]);
-  useEffect(() => { if (!running || !campaignId) return undefined; const timer=window.setInterval(()=>advanceTime(10*speed).catch(console.error),2600); return()=>window.clearInterval(timer); },[running,speed,campaignId,advanceTime]);
+
+  useEffect(() => {
+    if (!running || !campaignId) return undefined;
+    const timer=window.setInterval(()=>advanceTime(10*speed).catch(console.error),2600);
+    return()=>window.clearInterval(timer);
+  },[running,speed,campaignId,advanceTime]);
+
+  useEffect(() => {
+    if (!campaignId || activeTool !== 'time') return;
+    axios.get(`/api/calendar/${campaignId}`, { headers })
+      .then(response => {
+        if (response.data && response.data.id) {
+          setActiveCalendar(response.data);
+          // Prefill our manual editing cache fields with true engine values
+          const cur = response.data.current_date || {};
+          setManualDate({
+            year: cur.year ?? 1492,
+            month_index: cur.month_index ?? 0,
+            day: cur.day ?? 1,
+            hour: cur.hour ?? 12,
+            minute: cur.minute ?? 0
+          });
+        }
+      })
+      .catch(err => console.error("Failed to synchronize active calendar template schema:", err));
+  }, [campaignId, activeTool, simulation.time]);
+
+
   const route = simulation.routes?.[0];
   const lamps = route?.lamps || [];
+
   const calculateTravel = async (nextDestination = destination) => {
     if (!campaignId || !nextDestination) return;
     const payload = nextDestination.id ? {poi_id:nextDestination.id,party_size:partySize} : {destination:nextDestination,party_size:partySize};
     const response = await axios.post(`/api/travel/${campaignId}/calculate`, payload, {headers});
     setTravelPlan(response.data);
   };
+
   const chooseDestination = (next) => { setDestination(next); setTravelPlan(null); };
+
   const setPartyHere = async () => {
     if (!destination) return;
     const response = await axios.patch(`/api/travel/${campaignId}/party-position`, destination, {headers});
     setTravelContext((value)=>({...value,party_position:response.data}));
     setDestination(null); setTravelPlan(null);
   };
+
   const selectedReference=referenceLayers.find(layer=>layer.id===selectedReferenceId)||referenceLayers[0];
+
   const updateReference=(id,updater)=>setReferenceLayers(values=>values.map(layer=>layer.id===id?updater(layer):layer));
-  const recordCalibrationPoint=(point)=>setCalibrationPoints(values=>[...(values.length>=2?[]:values),{x:Math.round(point.x),y:Math.round(point.y)}]);
+
+  const recordCalibrationPoint = useCallback((point) => {
+    setCalibrationPoints(values => [...(values.length >= 2 ? [] : values), { x: Math.round(point.x), y: Math.round(point.y) }]);
+  }, []);
+
+  // 2. Wrap the onWaypoint inline function
+  const handleWaypoint = useCallback((point) => {
+    chooseDestination({
+      ...point,
+      map_key: atlas.locations.find(location => location.id === activeSettlementId)?.map_key || 'settlement',
+      name: 'Map waypoint',
+      road_access: true,
+      water_access: point.x > 500
+    });
+  }, [chooseDestination, atlas.locations, activeSettlementId]);
+
+  // 3. Wrap the conditional onCameraChange inline function
+  const handleCameraChange = useCallback((camera) => {
+    if (playerFollow) {
+      sendPlayerCommand('camera', { camera });
+    }
+  }, [playerFollow, sendPlayerCommand]);
+
   const applyReferenceCalibration=()=>{
     if(!selectedReference||calibrationPoints.length!==2)return;
     updateReference(selectedReference.id,layer=>calibrateReferenceLayer(layer,calibrationPoints[0],calibrationPoints[1],knownDistance));
     setCalibrationPoints([]);setFitRequest(value=>value+1);
   };
+
   const uploadReference=async(event)=>{
     event.preventDefault();
     if(!referenceUpload.file||!campaignId)return;
@@ -292,50 +597,83 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
       setUploadStatus(`Original retained · viewer ${layer.preview_pixel_width} × ${layer.preview_pixel_height} px`);setFitRequest(value=>value+1);
     }catch(error){console.error('Unable to upload reference map:',error);setUploadStatus(error.response?.data?.message||error.response?.data?.details||error.message||'Upload failed');}
   };
+
   const formatDuration = (minutes) => minutes < 60 ? `${minutes} min` : minutes < 1440 ? `${Math.floor(minutes/60)}h ${minutes%60}m` : `${Math.floor(minutes/1440)}d ${Math.floor((minutes%1440)/60)}h`;
+  
   const formatCost = (cp) => { const sign=cp<0?'-':'';const value=Math.abs(cp);return value>=100?`${sign}${(value/100).toFixed(1)} gp`:value>=10?`${sign}${(value/10).toFixed(1)} sp`:`${sign}${value} cp`; };
+  
   const runEconomy=async(days)=>{const response=await axios.post(`/api/economy/${campaignId}/simulate`,{days},{headers});setEconomy(response.data);};
+  
   const rebalanceWorkforce=async()=>{const response=await axios.post(`/api/economy/${campaignId}/workforce/rebalance`,{},{headers});setEconomy(response.data.dashboard);};
+  
   const disruptMarket=async(key)=>{const response=await axios.post(`/api/economy/${campaignId}/commodities/${key}/purchase`,{quantity:commodityQuantity},{headers});setEconomy(response.data.dashboard);};
+  
   const updateAtlasLocation=(next)=>setAtlas(value=>({...value,locations:value.locations.map(location=>location.id===next.id?next:location)}));
+  
   const renameSettlement=async()=>{
     const name=settlementName.trim();if(!name||!activeSettlementId)return;
     try{const response=await axios.patch(`/api/world-atlas/${campaignId}/settlements/${activeSettlementId}`,{name},{headers});updateAtlasLocation(response.data);setSettlementName(response.data.name);}
     catch(error){setAtlasStatus(error.response?.data?.message||'Unable to rename settlement');}
   };
+
   const createSettlement=async(event)=>{
     event.preventDefault();setAtlasStatus('Creating…');
     try{const response=await axios.post(`/api/world-atlas/${campaignId}/settlements`,{name:newSettlementName.trim()||'New Settlement'},{headers});setAtlas(value=>({...value,locations:[...value.locations,response.data]}));setNewSettlementName('');await openSettlement(response.data.id);setActiveTool('atlas');setAtlasStatus(`${response.data.name} created. Click the overworld map to place it.`);}
     catch(error){setAtlasStatus(error.response?.data?.message||'Unable to create settlement');}
   };
+
   const placeSettlement=async(id,x,y)=>{
     try{const response=await axios.patch(`/api/world-atlas/${campaignId}/settlements/${id}`,{atlas_x:x,atlas_y:y},{headers});updateAtlasLocation(response.data);setAtlasStatus(`${response.data.name} placed on the atlas.`);}
     catch(error){setAtlasStatus(error.response?.data?.message||'Unable to place settlement');}
   };
+
   const setSettlementStatus=async(location,status)=>{
     try{const response=await axios.patch(`/api/world-atlas/${campaignId}/settlements/${location.id}`,{status},{headers});updateAtlasLocation(response.data);setAtlasStatus(status==='destroyed'?`${location.name} remains on the atlas as a destroyed settlement.`:`${location.name} restored.`);}
     catch(error){setAtlasStatus(error.response?.data?.message||'Unable to update settlement status');}
   };
+
   const removeSettlementMarker=async(location)=>{
     try{const response=await axios.patch(`/api/world-atlas/${campaignId}/settlements/${location.id}`,{atlas_x:null,atlas_y:null},{headers});updateAtlasLocation(response.data);setAtlasStatus(`${location.name} removed from the overworld map.`);}
     catch(error){setAtlasStatus(error.response?.data?.message||'Unable to remove settlement marker');}
   };
+
   const deleteSettlement=async(location)=>{
     if(!window.confirm(`Permanently delete ${location.name}? This is intended for mistakes. If it was destroyed in the story, cancel and use “Mark destroyed” instead.`))return;
     try{const response=await axios.delete(`/api/world-atlas/${campaignId}/settlements/${location.id}?reason=mistake`,{headers});setAtlas(value=>{const remaining=value.locations.filter(item=>item.id!==location.id);return {...value,locations:remaining.length?remaining:[response.data.active_settlement]};});if(location.id===activeSettlementId)await openSettlement(response.data.active_settlement.id);setAtlasStatus(`${location.name} deleted.`);}
     catch(error){setAtlasStatus(error.response?.data?.message||'Unable to delete settlement');}
   };
+
+  
   const selectedBusiness=economy.businesses.find(business=>business.id===Number(selectedBusinessId));
+  
   const selectedHistory=economy.history?.[String(selectedBusinessId)]||[];
+  
   const tenday=selectedHistory.slice(-10).reduce((totals,row)=>({revenue:totals.revenue+row.revenue_cp,profit:totals.profit+row.profit_cp}),{revenue:0,profit:0});
+  
   const resources=useMemo(()=>({population:economy.workforce?.agents?.length||0,food:0,wood:0,coin:0}),[economy]);
+  
   const selectedBuilding=buildings.find(building=>building.id===selected?.id)||selected;
+  
   const selectedAsset=assets.find(asset=>asset.key===selectedBuilding?.asset_key);
+  
   const selectedRoad=roads.find(road=>road.id===selectedBuilding?.front_road_id);
+  
   const updateSelectedBuilding=(updater)=>{if(!selectedBuilding)return;setBuildings(values=>values.map(building=>building.id===selectedBuilding.id?updater(building):building));};
-  const openBuildingEditor=()=>{if(selectedBuilding)setBuildingEditDraft({...selectedBuilding,factions:Array.isArray(selectedBuilding.factions)?selectedBuilding.factions.join(', '):(selectedBuilding.factions||''),tags:Array.isArray(selectedBuilding.tags)?selectedBuilding.tags.join(', '):(selectedBuilding.tags||'')});};
-  const saveBuildingEditor=()=>{if(!buildingEditDraft)return;const asset=assets.find(item=>item.key===buildingEditDraft.asset_key);updateSelectedBuilding(building=>({...building,...buildingEditDraft,factions:String(buildingEditDraft.factions||'').split(',').map(value=>value.trim()).filter(Boolean),tags:String(buildingEditDraft.tags||'').split(',').map(value=>value.trim()).filter(Boolean),rooms:asset?.rooms||building.rooms}));setBuildingEditDraft(null);};
+  
+  const openBuildingEditor=()=>{
+    if(selectedBuilding)setBuildingEditDraft(
+      {...selectedBuilding,factions:Array.isArray(selectedBuilding.factions)?selectedBuilding.factions.join(', '):(selectedBuilding.factions||''),tags:Array.isArray(selectedBuilding.tags)?selectedBuilding.tags.join(', '):(selectedBuilding.tags||'')}
+    );
+  };
+  
+  const saveBuildingEditor=()=>{
+    if(!buildingEditDraft)return;
+    const asset=assets.find(item=>item.key===buildingEditDraft.asset_key);
+    updateSelectedBuilding(building=>({...building,...buildingEditDraft,factions:String(buildingEditDraft.factions||'').split(',').map(value=>value.trim()).filter(Boolean),tags:String(buildingEditDraft.tags||'').split(',').map(value=>value.trim()).filter(Boolean),rooms:asset?.rooms||building.rooms}));
+    setBuildingEditDraft(null);};
+  
   const rerollSelectedBuilding=()=>{if(!selectedBuilding||!assets.length)return;const choices=assets.filter(asset=>asset.key!==selectedBuilding.asset_key),asset=choices[Math.floor(Math.random()*choices.length)]||assets[0];updateSelectedBuilding(building=>({...building,name:asset.name,asset_key:asset.key,building_type:asset.category,width_feet:asset.width_feet,depth_feet:asset.depth_feet,rooms:[...asset.rooms]}));};
+  
   const openBuildingEvents=()=>{
     if(!selectedBuilding)return;
     const agents = economy.workforce?.agents || [],names=(
@@ -350,138 +688,532 @@ export default function SettlementManager({ headers, socket, mainEnvironmentUrl 
         {...environment,events:[
           event,...(
             environment.events||[]
-          )].slice(0,40)}));
-          setBuildingEvents(null);};
+          )].slice(0,40)
+        }
+      )
+    );
+    setBuildingEvents(null);
+  };
 
-  const activeMapKey=atlas.locations.find(location=>location.id===activeSettlementId)?.map_key||null;
-  const searchableLocations=useMemo(()=>settlementSearchLocations({buildings,points:travelContext.points_of_interest,businesses:economy.businesses,assets,mapKey:activeMapKey}),[buildings,travelContext.points_of_interest,economy.businesses,assets,activeMapKey]);
-  const locationResults=useMemo(()=>searchSettlementLocations(searchableLocations,locationSearch),[searchableLocations,locationSearch]);
-  const selectedLocation=searchableLocations.find(location=>location.id===selectedLocationId)||null;
-  const selectLocation=location=>{setSelectedLocationId(location.id);if(location.kind==='building')setSelected(location.source);};
-  const centerDmOn=location=>{if(location?.point)window.dispatchEvent(new CustomEvent('settlement-map-focus',{detail:location.point}));};
-  const centerPlayerOnLocation=location=>{if(location?.point)sendPlayerCommand('focus',{point:location.point});};
+  const activeMapKey=atlas.locations.find(location=>location.id===activeSettlementId)?.map_key || null;
   
-  // Custom function to calculate label scale based on zoom and screen density
-  const getLabelScale = (scale) => {
-    if (!scale || scale.feet <= 0) return 1;
-    
-    // Scale the label size inversely with feet per pixel (smaller feet/pixel = more zoomed in = larger labels)
-    const baseScale = 1.5; // Base scale factor for readability
-    // Apply logarithmic scaling to ensure appropriate scaling across wide range of zoom levels
-    return Math.min(3, baseScale / Math.log10(scale.feet / 100 + 1) + 0.5);
+  const searchableLocations=useMemo(()=>settlementSearchLocations({buildings,points:travelContext.points_of_interest,businesses:economy.businesses,assets,mapKey:activeMapKey}),[buildings,travelContext.points_of_interest,economy.businesses,assets,activeMapKey]);
+  
+  const locationResults=useMemo(()=>searchSettlementLocations(searchableLocations,locationSearch),[searchableLocations,locationSearch]);
+  
+  const selectedLocation=searchableLocations.find(location=>location.id===selectedLocationId) || null;
+  
+  const selectLocation=location=>{
+    setSelectedLocationId(location.id);if(location.kind==='building')setSelected(location.source);
   };
   
-  const [scaleIndicator, setScaleIndicator] = useState({ feet: 100, pixels: 100 });
+  const centerDmOn=location=>{
+    if(location?.point)window.dispatchEvent(new CustomEvent('settlement-map-focus',{detail:location.point}));
+  };
   
-  // Event-based synchronization with SettlementMapEditor
+  const centerPlayerOnLocation=location=>{
+    if(location?.point)sendPlayerCommand('focus',{point:location.point});
+  };
+
+  // *************************************************************
+  // Functions to handle optimistic UI with debounced server sync
+  // *************************************************************
+
+  const [isSyncing, setIsSyncing] = useState(false);
+  const saveTimeoutRef = useRef(null);
+
+  // 1. Add this simple function to handle the optimistic UI update
+  const handleSculptStroke = useCallback((newStroke) => {
+    // Instantly append the stroke so Babylon.js re-renders the terrain in real-time
+    setTerrainStrokes(prev => [...prev, newStroke]);
+  }, []);
+
+  // 2. Add a ref to prevent the "echo" save after we bake strokes into the heightmap
+  const skipNextSaveRef = useRef(false);
+
+  // 3. Replace your existing global save useEffect with this updated version:
   useEffect(() => {
-    const handleScaleChange = (event) => {
-      setScaleIndicator(event.detail);
-    };
-    
-    window.addEventListener('settlement-map-scale-change', handleScaleChange);
-    
+    if (!designLoaded || !campaignId || !activeSettlementId) return undefined;
+
+    // Prevent the "echo" save after we bake strokes into the heightmap
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      setSaveStatus('Saved');
+      return;
+    }
+
+    setSaveStatus('Unsaved changes');
+    const timer = window.setTimeout(() => {
+      setSaveStatus('Saving…');
+
+      // 1. Prepare the heightmap by baking any pending terrain strokes
+      let nextHeightMap = heightMap;
+      if (terrainStrokes.length > 0) {
+        // Clone the heightmap to avoid mutating state before the save completes
+        nextHeightMap = heightMap
+          ? { ...heightMap, values: new Float32Array(heightMap.values) }
+          : createDefaultHeightmap();
+
+        // Bake the pending strokes into the cloned heightmap
+        terrainStrokes.forEach(stroke => bakeStrokeIntoHeightmap(nextHeightMap, stroke));
+      }
+
+      // 2. Prepare the payload
+      const payload = {
+        settlement_id: activeSettlementId,
+        terrain_strokes: [], // Clear legacy strokes to prevent DB bloat
+        roads,
+        buildings,
+        water_bodies: waterBodies,
+        environment: {
+          ...mapEnvironment,
+          atmosphere: atmosphereSettings,
+          weather: weatherSettings
+        },
+        weather: weatherSettings,
+        reference_layers: [...referenceLayers]
+      };
+
+      // 3. Serialize the baked heightmap into the reference layers
+      if (nextHeightMap) {
+        const heightmapLayer = {
+          id: nextHeightMap.id || `heightmap-${Date.now()}`,
+          layer_type: 'heightmap',
+          name: nextHeightMap.name || 'Sculpted Terrain',
+          grid_width: nextHeightMap.grid_width,
+          grid_height: nextHeightMap.grid_height,
+          values: Array.from(nextHeightMap.values), // Convert Float32Array to standard Array for JSON
+          width_feet: nextHeightMap.width_feet,
+          height_feet: nextHeightMap.height_feet,
+          origin_x: nextHeightMap.origin_x,
+          origin_y: nextHeightMap.origin_y,
+          min_elevation_feet: nextHeightMap.min_elevation_feet,
+          max_elevation_feet: nextHeightMap.max_elevation_feet,
+        };
+        payload.reference_layers.push(heightmapLayer);
+      }
+
+      // 4. Send to server
+      axios.put(`/api/settlement-map/${campaignId}`, payload, { headers })
+        .then(() => {
+          setSaveStatus('Saved');
+          // Now that the server has the baked heightmap, update local state
+          // and clear the strokes so the UI reflects the permanent heightmap.
+          if (terrainStrokes.length > 0) {
+            skipNextSaveRef.current = true; // Flag to prevent the useEffect from running again
+            setHeightMap(nextHeightMap);
+            setTerrainStrokes([]);
+          }
+        })
+        .catch((error) => {
+          console.error('Unable to save settlement map:', error);
+          setSaveStatus('Save failed');
+        });
+    }, 700);
+
+    return () => window.clearTimeout(timer);
+  }, [designLoaded, referenceLayers, campaignId, activeSettlementId, headers, terrainStrokes, heightMap, roads, buildings, waterBodies, mapEnvironment, atmosphereSettings, weatherSettings]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
     return () => {
-      window.removeEventListener('settlement-map-scale-change', handleScaleChange);
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
   }, []);
   
-  // Event-based synchronization with SettlementMapEditor
-  useEffect(() => {
-    const handleScaleChange = (event) => {
-      setScaleIndicator(event.detail);
-    };
-    
-    window.addEventListener('settlement-map-scale-change', handleScaleChange);
-    
-    return () => {
-      window.removeEventListener('settlement-map-scale-change', handleScaleChange);
-    };
-  }, []);
-  
-  return <div className="settlement-sim">
-    <header className="settlement-topbar">
-      <div className="settlement-title">
-        <button className="return-kachhapa-button" onClick={()=>window.location.assign(mainEnvironmentUrl)} title="Return to Kachhapa" aria-label="Return to Kachhapa"><ExitToAppIcon/></button>
-        <div>
-          <span className="eyebrow">SETTLEMENT SIMULATION</span>
-          <input className="settlement-name-input" aria-label="Settlement name" value={settlementName} onChange={event=>setSettlementName(event.target.value)} onBlur={renameSettlement} onKeyDown={event=>{if(event.key==='Enter')event.currentTarget.blur();}}/>
-          <small className={`map-save-status ${saveStatus==='Save failed'?'error':''}`}>{saveStatus}</small>
-          </div>
-          </div>
-          <div className="settlement-date">
-            <span>{String(simulation.time?.hour??12).padStart(2,'0')}:{String(simulation.time?.minute??0).padStart(2,'0')} · {route?.phase?.replace('_',' ') || 'off duty'}</span>
-            <strong>Day {day}</strong>
+  return (
+    <div className="settlement-sim">
+      <header className="settlement-topbar">
+        <div className="settlement-title">
+          <button className="return-kachhapa-button" onClick={()=>window.location.assign(mainEnvironmentUrl)} title="Return to Kachhapa" aria-label="Return to Kachhapa"><ExitToAppIcon/></button>
+          <div>
+            <span className="eyebrow">SETTLEMENT SIMULATION</span>
+            <input className="settlement-name-input" aria-label="Settlement name" value={settlementName} onChange={event=>setSettlementName(event.target.value)} onBlur={renameSettlement} onKeyDown={event=>{if(event.key==='Enter')event.currentTarget.blur();}}/>
+            <small className={`map-save-status ${saveStatus==='Save failed'?'error':''}`}>{saveStatus}</small>
             </div>
-            <div className="topbar-actions">
-              <button className="open-player-view" onClick={openPlayerView}>
-                <OpenInNewIcon/> Player View</button>
-              <label title="Continuously mirror this camera in Player View">
-                <input type="checkbox" checked={playerFollow} onChange={event=>setPlayerFollow(event.target.checked)}/>
-                  Follow DM
+            </div>
+            <div className="settlement-date">
+              <span>{String(simulation.time?.hour??12).padStart(2,'0')}:{String(simulation.time?.minute??0).padStart(2,'0')} · {route?.phase?.replace('_',' ') || 'off duty'}</span>
+              <strong>Day {day}</strong>
+              </div>
+              <div className="topbar-actions">
+                <button className="button" onClick={openPlayerView}>
+                  <OpenInNewIcon/> Player View</button>
+                <label title="Continuously mirror this camera in Player View">
+                  <input type="checkbox" checked={playerFollow} onChange={event=>setPlayerFollow(event.target.checked)}/>
+                    Follow DM
+                  </label>
+                <label title="Identify every building in Player View">
+                  <input type="checkbox" checked={showAllPlayerLabels} onChange={event=>{const visible=event.target.checked;setShowAllPlayerLabels(visible);sendPlayerCommand('labels_all',{visible});}}/>
+                  All labels
                 </label>
-              <label title="Identify every building in Player View">
-                <input type="checkbox" checked={showAllPlayerLabels} onChange={event=>{const visible=event.target.checked;setShowAllPlayerLabels(visible);sendPlayerCommand('labels_all',{visible});}}/>
-                All labels
-              </label>
-              <div className="time-controls">
-                <button onClick={()=>advanceTime(-60)}>
-                  -1h
-                </button>
-                <button onClick={()=>setRunning(v=>!v)}>
-                  {running?'Ⅱ':'▶'}
-                </button>
-                {[1,2,4].map(
-                  v=>
-                    <button key={v} className={speed===v?'active':''} onClick={()=>setSpeed(v)}>{v}×</button>
-                  )
-                }
-          <button onClick={()=>advanceTime(60)}>+1h</button>
+                <div className="time-controls">
+                  <button onClick={()=>advanceTime(-60)}>
+                    -1h
+                  </button>
+                  <button onClick={()=>setRunning(v=>!v)}>
+                    {running?'Ⅱ':'▶'}
+                  </button>
+                  {[1,2,4].map(
+                    v=>
+                      <button key={v} className={speed===v?'active':''} onClick={()=>setSpeed(v)}>{v}×</button>
+                    )
+                  }
+            <button onClick={()=>advanceTime(60)}>+1h</button>
+          </div>
         </div>
+      </header>
+      <div className="settlement-body">
+        {activeTool !== 'atlas' && <aside className="settlement-toolbar-horizontal">
+          <button className={activeTool==='atlas'?'active':''} onClick={()=>setActiveTool('atlas')} title="Atlas"><PublicIcon/></button>
+          <button disabled={!designLoaded} className={activeTool==='inspect'?'active':''} onClick={()=>setActiveTool('inspect')} title="Inspect"><HomeWorkIcon/></button>
+          <button disabled={!designLoaded} className={activeTool === 'reference' ? 'active' : ''} onClick={() => setActiveTool('reference')} title="Reference"><CompareIcon/></button>
+          <button disabled={!designLoaded} className={activeTool === 'atmosphere' ? 'active' : ''} onClick={() => setActiveTool('atmosphere')} title="Atmosphere Configuration"><CloudIcon /></button>
+          <button disabled={!designLoaded} className={activeTool === 'road' ? 'active' : ''} onClick={() => setActiveTool('road')} title="Roads"><EditRoadIcon /></button>
+          <button disabled={!designLoaded} className={activeTool==='fortification'?'active':''} onClick={()=>setActiveTool('fortification')} title="Walls"><FenceIcon/></button>
+          <button disabled={!designLoaded} className={activeTool==='water'?'active':''} onClick={()=>setActiveTool('water')} title="Water"><WaterIcon/></button>
+          <button disabled={!designLoaded} className={activeTool === 'region' ? 'active' : ''} onClick={() => setActiveTool('region')} title="Regions"><PolylineIcon /></button>
+          <button disabled={!designLoaded} className={activeTool === 'build' ? 'active' : ''} onClick={() => setActiveTool('build')} title="Build"><AddBusinessIcon/></button>
+          <button disabled={!designLoaded} className={activeTool==='terrain'?'active':''} onClick={()=>setActiveTool('terrain')} title="Terrain"><TerrainIcon/></button>
+          <button disabled={!designLoaded} className={activeTool==='travel'?'active':''} onClick={()=>setActiveTool('travel')} title="Travel"><RouteIcon/></button>
+          <button disabled={!designLoaded} className={activeTool==='economy'?'active':''} onClick={()=>setActiveTool('economy')} title="Economy"><StorefrontIcon/></button>
+          <button disabled={!designLoaded} className={activeTool === 'weather' ? 'active' : ''} onClick={() => setActiveTool('weather')} title="Weather Systems"><ThunderstormIcon /></button>
+          <button disabled={!designLoaded} className={activeTool === 'time' ? 'active' : ''} onClick={() => setActiveTool('time')} title="Time of Day"><ScheduleIcon /></button>
+        </aside>}
+        <main className="settlement-map" onClick={()=>setMapContext(null)}>
+          {activeTool!=='atlas'&&mapLoading&&<MapLoading settlementName={settlementName}/>}
+          {activeTool!=='atlas'&&designLoaded&&!mapLoading&&<Suspense fallback={<MapLoading settlementName={settlementName}/>}>
+          <SettlementMapEditor
+            activeTool={activeTool}
+            atmosphereSettings={atmosphereSettings}
+            setAtmosphereSettings={setAtmosphereSettings}
+            weatherSettings={weatherSettings}
+            setWeatherSettings={setWeatherSettings}
+            assets={assets}
+            buildings={buildings}
+            setBuildings={setBuildings}
+            simulation={simulation}
+            
+            selected={selectedBuilding}
+            setSelected={setSelected}
+            viewCommand={activeViewCommand}
+
+            buildingViewMode={buildingViewMode}
+            roads={roads}
+            setRoads={setRoads}
+            strokes={terrainStrokes}
+            setStrokes={setTerrainStrokes}
+            heightMap={heightMap}
+            setHeightMap={setHeightMap}
+            waterBodies={waterBodies}
+            setWaterBodies={setWaterBodies}
+            mapEnvironment={mapEnvironment}
+            setMapEnvironment={setMapEnvironment}
+            setFortifications={setFortifications}
+            dusk={(simulation.time?.hour??12)>=18||(simulation.time?.hour??12)<6}
+            lamps={lamps}
+            partyPosition={travelContext.party_position}
+            destination={destination}
+            referenceLayers={referenceLayers}
+            onWaypoint={handleWaypoint}
+            onReferencePoint={recordCalibrationPoint}
+            onCameraChange={handleCameraChange}
+            calibrationPoints={calibrationPoints}
+            fitRequest={fitRequest}
+            pointsOfInterest={travelContext.points_of_interest}
+            campaignName={headers?.campaignName||headers?.CampaignName||''}
+            onMapContext={setMapContext}
+          />
+          </Suspense>
+          }
+          {activeTool!=='atlas' && !designLoaded && !mapLoading &&
+          <div className="settlement-map-loading is-error" role="status">
+            <strong>{saveStatus}</strong>
+            <span>Return to the Atlas and choose a settlement to try again.</span>
+            <button type="button" onClick={()=>setActiveTool('atlas')}>Open World Atlas</button>
+            </div>
+            }
+          {activeTool!=='atlas' && designLoaded && !mapLoading && 
+            <div className="map-hint">{
+              activeTool==='travel'?
+                'Click terrain to set a waypoint':
+              activeTool==='build'?
+                'Choose an asset to place, or drag the selected building and its footprint handles':
+              activeTool==='terrain'?'Drag to sculpt terrain · WASD or arrows to pan':
+              activeTool==='road'?'Click a road or list entry, then choose Add Points or Edit Points':
+              activeTool==='fortification'?'Click a wall or list entry, then choose Add Points or Edit Points':
+              activeTool==='water'?'Click a path for a river or a shoreline for lakes and oceans':
+              activeTool==='region'? 'Select a region or begin drawing a new boundary' :
+              activeTool==='inspect' && firstPerson ? 'WASD walk · Left Shift sprint · Mouse aim · Esc or M releases cursor' :
+              activeTool === 'inspect' ? 'WASD pan · Q/E orbit · R/F pitch · Left Shift/Ctrl elevation · Wheel/pinch zoom' : 'WASD pan · Q/E orbit · R/F pitch · Wheel/pinch zoom'}</div>}
+          {activeTool==='inspect' && designLoaded &&
+            <label className="map-view-mode">Map view
+              <select value={buildingViewMode} onChange={event=>setBuildingViewMode(event.target.value)}>
+                <option value="satellite">Satellite</option>
+                <option value="building-type">Building type</option>
+                <option value="useful">Useful buildings</option>
+                <option value="districts">Districts</option>
+              </select>
+            </label>}
+          {activeTool==='reference' && selectedReference &&
+            <div className="reference-projection-toggle">
+              <label>
+                <input type="checkbox" checked={selectedReference.project_to_terrain!==false} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,project_to_terrain:event.target.checked}))}/> Project image onto sculpted terrain
+              </label>
+              <small>Opacity controls the projected overlay, preserving the material underneath.</small>
+            </div>
+            }
+          {mapContext && <div className="player-map-context" style={{left:mapContext.x,top:mapContext.y}} onClick={event=>event.stopPropagation()}>
+            <strong>{mapContext.target?.building?.name||mapContext.target?.point?.name||'Map point'}</strong>
+            <button onClick={()=>{centerDmOn({point:mapContext.target?.point});setMapContext(null);}}>
+              <CenterFocusStrongIcon/> Center in view</button>
+              <button onClick={()=>centerPlayerOn(mapContext.target?.point)}>
+                <CenterFocusStrongIcon/> Center in Player View</button>
+                {mapContext.target?.kind==='building' && <button onClick={()=>setBuildingLabel(mapContext.target.building,!playerLabels.includes(String(mapContext.target.building.id)))}>
+                  <VisibilityIcon/> {playerLabels.includes(String(mapContext.target.building.id))?'Hide building label':'Show building label'}</button>}
+            </div>
+          }
+          {activeTool=== 'atlas' && <div className="world-atlas">
+            <section className="atlas-stage">
+            <div className="atlas-heading"><div>
+            <span>WORLD ATLAS</span>
+            <h3>{atlas.atlas?.name||'Campaign World'}</h3>
+            </div></div>
+            <AtlasViewport
+              atlas={atlas.atlas}
+              locations={atlas.locations}
+              selectedId={movingAtlasId || activeSettlementId}
+              onSelect={id=>openSettlement(id)}
+              placementEnabled={movingAtlasId!=null}
+              onPlace={async(x,y)=>{await placeSettlement(movingAtlasId,x,y);setMovingAtlasId(null);}}
+            />
+            <small className="atlas-help">{movingAtlasId?`Click the atlas to set ${atlas.locations.find(location=>location.id===movingAtlasId)?.name || 'the settlement'}'s new position.` : `Wheel to zoom and drag to pan. Choose Move beside a settlement before changing its marker.`}</small></section><aside className="atlas-list"><div>
+            <span>SETTLEMENTS</span>
+            <strong>{atlas.locations.length}</strong>
+            </div>
+            {(!atlas.atlas?.image_url || showAtlasUpload) && <form className="atlas-image-upload" onSubmit={async event=>{await uploadAtlasImage(event);setShowAtlasUpload(false);}}>
+              <strong>World atlas image</strong>
+              <small>Upload a map you are permitted to use for this private campaign.</small>
+              <input type="file" accept="image/png,image/jpeg,image/webp" onChange={event=>setAtlasUpload(value=>({...value,file:event.target.files?.[0]||null}))}/>
+              <input value={atlasUpload.attribution} onChange={event=>setAtlasUpload(value=>({...value,attribution:event.target.value}))} placeholder="Attribution or source note (optional)"/>
+              <button type="submit" disabled={!atlasUpload.file}>Store atlas</button>
+              </form>}{atlas.atlas?.image_url && !showAtlasUpload && <button type="button" className="atlas-replace-image" onClick={()=>setShowAtlasUpload(true)}>Replace world atlas image</button>}
+              <form onSubmit={createSettlement}><input value={newSettlementName} onChange={event=>setNewSettlementName(event.target.value)} placeholder="Settlement name"/>
+                <button type="submit"><AddIcon/> Create</button>
+              </form>
+              <div className="atlas-location-list">{atlas.locations.map(location=><article key={location.id} className={`${location.id===(movingAtlasId||activeSettlementId)?'active ':''}${location.status==='destroyed'?'destroyed':''}`}>
+                <button type="button" className="atlas-open" onClick={()=>openSettlement(location.id)}>
+                  <strong>{location.name}{location.status==='destroyed'?' · Destroyed':''}</strong>
+                  <small>{location.atlas_x==null?'Not placed':`${Math.round(location.atlas_x*100)}%, ${Math.round(location.atlas_y*100)}%`} · {location.settlement_type||'town'}</small>
+                </button><div className="atlas-item-actions">
+                <button type="button" className={movingAtlasId===location.id?'active':''} onClick={()=>{setMovingAtlasId(location.id);setAtlasStatus(`Click the atlas to move ${location.name}.`);}}>Move</button>
+                {location.atlas_x!=null && <button type="button" onClick={()=>removeSettlementMarker(location)} title={`Remove ${location.name} from map`}>Unplace</button>}
+                <button type="button" onClick={()=>setSettlementStatus(location,location.status==='destroyed'?'active':'destroyed')}>{location.status==='destroyed'?'Restore':'Destroy'}</button>
+                <button type="button" className="atlas-delete" onClick={()=>deleteSettlement(location)} title={`Permanently delete ${location.name}`}><DeleteOutlineIcon/></button>
+              </div>
+              </article>)}
+            </div>
+            <small className="atlas-status">{atlasStatus}</small>
+            </aside>
+            </div>}
+          {activeTool=== 'reference' && <div className="reference-menu">
+            <span>REFERENCE LAYERS</span>
+            <form onSubmit={uploadReference}>
+              <input type="file" accept="image/png,image/jpeg,image/webp" onChange={event=>setReferenceUpload(value=>({...value,file:event.target.files?.[0]||null,name:value.name||event.target.files?.[0]?.name.replace(/\.[^.]+$/,'')||''}))}/>
+              <label>Name<input value={referenceUpload.name} onChange={event=>setReferenceUpload(value=>({...value,name:event.target.value}))}/>
+              </label>
+              <div className="reference-dimensions">
+                <label>Width (ft)<input type="number" min="1" value={referenceUpload.width_feet} onChange={event=>setReferenceUpload(value=>({...value,width_feet:Number(event.target.value)}))}/>
+                </label>
+                <label>Height (ft)<input type="number" min="1" value={referenceUpload.height_feet} onChange={event=>setReferenceUpload(value=>({...value,height_feet:Number(event.target.value)}))}/>
+                </label>
+                </div>
+                <button className="calculate-route" disabled={!referenceUpload.file}>Upload reference</button>
+                <small>{uploadStatus}</small>
+                </form>{referenceLayers.length>0&&<>
+                <div className="reference-layer-list">
+          {referenceLayers.map(layer=><button key={layer.id} className={selectedReference?.id===layer.id?'active':''} onClick={()=>{setSelectedReferenceId(layer.id);setCalibrationPoints([]);}}>{layer.name}<small>{Math.round(layer.width_feet)} × {Math.round(layer.height_feet)} ft</small></button>)}</div>{selectedReference&&<div className="reference-settings"><label><input type="checkbox" checked={selectedReference.visible} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,visible:event.target.checked}))}/> Visible</label><small>Scale: {(Number(selectedReference.feet_per_pixel)||Number(selectedReference.width_feet)/Math.max(1,Number(selectedReference.pixel_width))).toFixed(3)} feet per source pixel</small><label>Opacity <strong>{Math.round(selectedReference.opacity*100)}%</strong><input type="range" min="0" max="1" step=".05" value={selectedReference.opacity} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,opacity:Number(event.target.value)}))}/></label><div className="reference-dimensions"><label>Width (ft)<input type="number" min="1" value={selectedReference.width_feet} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,width_feet:Number(event.target.value),feet_per_pixel:Number(event.target.value)/Math.max(1,Number(layer.pixel_width))}))}/></label><label>Height (ft)<input type="number" min="1" value={selectedReference.height_feet} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,height_feet:Number(event.target.value)}))}/></label><label>Center X<input type="number" value={selectedReference.origin_x} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,origin_x:Number(event.target.value)}))}/></label><label>Center Y<input type="number" value={selectedReference.origin_y} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,origin_y:Number(event.target.value)}))}/></label></div><div className="calibration-box"><strong>Known-distance calibration</strong><small>{calibrationPoints[0]?`A: ${calibrationPoints[0].x}, ${calibrationPoints[0].y}`:'Click point A'} · {calibrationPoints[1]?`B: ${calibrationPoints[1].x}, ${calibrationPoints[1].y}`:'Click point B'}</small><label>Distance (ft)<input type="number" min="1" value={knownDistance} onChange={event=>setKnownDistance(Number(event.target.value))}/></label><button onClick={applyReferenceCalibration} disabled={calibrationPoints.length!==2}>Apply calibration</button></div><div className="reference-actions"><button onClick={()=>setFitRequest(value=>value+1)}>Fit in view</button><button className="danger-action" onClick={()=>{setReferenceLayers(values=>values.filter(layer=>layer.id!==selectedReference.id));setSelectedReferenceId(null);setCalibrationPoints([]);}}>Remove layer</button></div></div>}</>}</div>}
+          {activeTool==='travel' && <div className="editor-menu">
+            <span>PLAN A JOURNEY</span>
+          <label>Destination<select value={destination?.id||''} onChange={(e)=>chooseDestination(travelContext.points_of_interest.find(point=>point.id===Number(e.target.value))||null)}>
+            <option value="">Select a point of interest</option>{travelContext.points_of_interest.map(point=><option key={point.id} value={point.id}>{point.name}</option>)}</select>
+            </label>
+            <label>Travelers<input type="number" min="1" value={partySize} onChange={(e)=>setPartySize(Math.max(1,Number(e.target.value)))}/>
+            </label>
+            {destination && <>
+              <div className="travel-destination">
+                <strong>{destination.name}</strong>
+                <small>{Math.round(destination.x)} E · {Math.round(destination.y)} N</small>
+              </div>
+              <button className="calculate-route" onClick={()=>calculateTravel()}>Calculate travel options</button>
+            </>}
+            {travelPlan && <div className="travel-options">
+              {travelPlan.options.map(option=> <div key={option.mode} className={!option.available?'unavailable':''}>
+                <strong>{option.label}</strong>
+                {option.available ? <>
+                <span>{formatDuration(option.elapsed_minutes)}</span>
+                <small>{option.distance_miles} mi · {formatCost(option.cost_cp)}</small>
+                </> : <small>{option.unavailable_reason}</small>}
+              </div>)}
+              <button className="set-party-button" onClick={setPartyHere}>Move party to destination</button>
+              </div>
+            }
+            </div>}
+          {activeTool==='economy' && <div className="editor-menu">
+            <div className="economy-header"><div>
+              <span>SETTLEMENT ECONOMY</span>
+              <h3>Market day {economy.day_index}</h3>
+              </div><div>
+                <button onClick={()=>runEconomy(1)}>Run day</button>
+                <button onClick={()=>runEconomy(10)}>Run tenday</button>
+                </div></div>
+                <div className="market-grid">{economy.markets.map(market=><article key={market.id} className={market.price_index>1.3?'shortage':''}><div>
+                  <strong>{market.name}</strong>
+                  <span>{market.current_price_cp} cp</span>
+                </div>
+                <small>{Math.round(market.stock)} / {Math.round(market.target_stock)} units · {market.price_index}× base</small>{market.last_imported>0&&<em>Imported {Math.round(market.last_imported)} today</em>}<div className="market-disrupt"><input type="number" min="1" value={commodityQuantity} onChange={e=>setCommodityQuantity(Math.max(1,Number(e.target.value)))}/><button onClick={()=>disruptMarket(market.commodity_key)}>Party buys</button></div></article>)}</div><div className="business-analytics"><div className="business-select"><label>Business<select value={selectedBusinessId||''} onChange={e=>setSelectedBusinessId(Number(e.target.value))}>{economy.businesses.map(business=><option key={business.id} value={business.id}>{business.name}{business.player_owned?' · Party':''}</option>)}</select></label>{selectedBusiness&&<div className="business-health"><span className={selectedBusiness.closed?'closed':''}>{selectedBusiness.closed?'Closed':'Operating'}</span><strong>{formatCost(selectedBusiness.cash_reserves_cp)} reserves</strong><small>Foot traffic {selectedBusiness.foot_traffic}× · Slump {selectedBusiness.slump_days} days</small></div>}</div><div className="chart-wrap"><div className="chart-heading"><strong>Daily sales</strong><span>Last tenday: {formatCost(tenday.revenue)} revenue · {formatCost(tenday.profit)} profit</span></div><SalesChart rows={selectedHistory}/></div></div></div>}
+
+          {activeTool === 'time' && <div className="editor-menu time-manager-panel">
+            <div className="panel-section-header">TIME OF DAY MANAGER</div>
+
+            <div className="time-increment-group">
+              <small className="control-label-eyebrow">STEP JUMPS</small>
+              <div className="increment-grid">
+                <button type="button" onClick={() => advanceTime(-60)}>
+                  <ArrowBackIcon fontSize="small" /> -1 Hour
+                </button>
+                <button type="button" onClick={() => advanceTime(60)}>
+                  +1 Hour <ArrowForwardIcon fontSize="small" />
+                </button>
+                
+                <button type="button" onClick={() => advanceTime(-720)}>
+                  <FastRewindIcon fontSize="small" /> -12 Hours
+                </button>
+                <button type="button" onClick={() => advanceTime(720)}>
+                  +12 Hours <FastForwardIcon fontSize="small" />
+                </button>
+                
+                <button type="button" onClick={() => advanceTime(-1440)}>
+                  <CalendarTodayIcon fontSize="small" style={{ marginRight: '4px' }} /> -1 Day
+                </button>
+                <button type="button" onClick={() => advanceTime(1440)}>
+                  +1 Day <CalendarTodayIcon fontSize="small" style={{ marginLeft: '4px' }} />
+                </button>
+              </div>
+            </div>
+
+            {!activeCalendar ? (
+              <div className="chart-empty" style={{ padding: '12px', textAlign: 'center', fontSize: '0.8rem' }}>
+                Synchronizing calendar matrix with database...
+              </div>
+            ) : (
+              <div className="manual-date-form">
+                <small className="control-label-eyebrow">MANUAL DATE & TIME ENTRY</small>
+                <div className="form-fields-row">
+                  <label>Year
+                    <input
+                      type="number"
+                      value={manualDate.year}
+                      onChange={e => setManualDate(prev => ({ ...prev, year: Number(e.target.value) }))}
+                    />
+                  </label>
+
+                  <label>Month
+                    <select
+                      value={manualDate.month_index}
+                      onChange={e => {
+                        const nextMonth = Number(e.target.value);
+                        setManualDate(prev => {
+                          const maxDays = activeCalendar?.months?.[nextMonth]?.length || 30;
+                          return { ...prev, month_index: nextMonth, day: Math.min(prev.day, maxDays) };
+                        });
+                      }}
+                    >
+                      {/* We can now safely map directly because activeCalendar is guaranteed to exist */}
+                      {activeCalendar.months.map((m, idx) => (
+                        <option key={idx} value={idx}>{m.name} ({m.subtitle || 'Standard'})</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>Day
+                    <input
+                      type="number"
+                      min="1"
+                      max={activeCalendar.months[manualDate.month_index]?.length || 30}
+                      value={manualDate.day}
+                      onChange={e => setManualDate(prev => ({ ...prev, day: Number(e.target.value) }))}
+                    />
+                  </label>
+                </div>
+
+                <div className="form-fields-row secondary-time-row">
+                  <label>Hour (0-23)
+                    <input
+                      type="number"
+                      min="0"
+                      max="23"
+                      value={manualDate.hour}
+                      onChange={e => setManualDate(prev => ({ ...prev, hour: Number(e.target.value) }))}
+                    />
+                  </label>
+
+                  <label>Minute (0-59)
+                    <input
+                      type="number"
+                      min="0"
+                      max="59"
+                      value={manualDate.minute}
+                      onChange={e => setManualDate(prev => ({ ...prev, minute: Number(e.target.value) }))}
+                    />
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  className="calculate-route apply-time-btn"
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent('settlement-time-absolute-request', {
+                      detail: { ...manualDate }
+                    }));
+                  }}
+                >
+                  Apply Exact Target Timeline
+                </button>
+              </div>
+)}
+
+
+            <div className="time-quick-actions">
+              <small className="control-label-eyebrow">QUICK PRESETS</small>
+              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('settlement-time-absolute-request', { detail: { hour: 6, minute: 0, day } }))}>🌅 Dawn (6:00)</button>
+              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('settlement-time-absolute-request', { detail: { hour: 12, minute: 0, day } }))}>☀️ Highsun / Noon (12:00)</button>
+              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('settlement-time-absolute-request', { detail: { hour: 18, minute: 0, day } }))}>🌇 Dusk (18:00)</button>
+              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent('settlement-time-absolute-request', { detail: { hour: 0, minute: 0, day } }))}>🌌 Midnight (0:00)</button>
+            </div>
+          </div>}
+
+          {designLoaded && activeTool !== 'atlas' && <div className="map-location-search" onClick={event=>event.stopPropagation()}>
+            <section className="location-search">
+              <div className="panel-kicker">FIND A LOCATION</div>
+              <input type="search" value={locationSearch} onChange={event=>setLocationSearch(event.target.value)} placeholder="Name, type, owner, faction…" aria-label="Search settlement locations"/>
+              {locationSearch && <div className="location-search-results">
+                {locationResults.map(location=>
+                  <button type="button"
+                      key={location.id}
+                      className={selectedLocation?.id===location.id?'active':''}
+                      onClick={()=>selectLocation(location)}>
+                    <strong>{location.title}</strong>
+                    <small>{location.type}{location.owner?` · ${location.owner}`:''}{textAffiliation(location)}</small>
+                  </button>
+                )}
+                {!locationResults.length && <small>No matching mapped locations.</small>}
+              </div>}
+              {selectedLocation && <div className="location-search-selection"><strong>{selectedLocation.title}</strong><small>{selectedLocation.type}{selectedLocation.affiliation?` · ${selectedLocation.affiliation}`:''}</small><div><button type="button" onClick={()=>centerDmOn(selectedLocation)}><CenterFocusStrongIcon/> Center in view</button><button type="button" onClick={()=>centerPlayerOnLocation(selectedLocation)}><OpenInNewIcon/> Center in Player View</button></div></div>}</section></div>}
+        </main>
       </div>
-    </header>
-    <div className="settlement-body">
-      {activeTool !== 'atlas' && <aside className="settlement-toolbar-horizontal">
-        <button className={activeTool==='atlas'?'active':''} onClick={()=>setActiveTool('atlas')} title="Atlas"><PublicIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='inspect'?'active':''} onClick={()=>setActiveTool('inspect')} title="Inspect"><HomeWorkIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='reference'?'active':''} onClick={()=>setActiveTool('reference')} title="Reference"><LayersIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='road'?'active':''} onClick={()=>setActiveTool('road')} title="Roads"><RouteIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='fortification'?'active':''} onClick={()=>setActiveTool('fortification')} title="Walls"><FenceIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='water'?'active':''} onClick={()=>setActiveTool('water')} title="Water"><WaterIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='region'?'active':''} onClick={()=>setActiveTool('region')} title="Regions"><ParkIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='build'?'active':''} onClick={()=>setActiveTool('build')} title="Build"><AddIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='terrain'?'active':''} onClick={()=>setActiveTool('terrain')} title="Terrain"><ParkIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='travel'?'active':''} onClick={()=>setActiveTool('travel')} title="Travel"><RouteIcon/></button>
-        <button disabled={!designLoaded} className={activeTool==='economy'?'active':''} onClick={()=>setActiveTool('economy')} title="Economy"><StorefrontIcon/></button>
-      </aside>}
-      <main className="settlement-map" onClick={()=>setMapContext(null)}>
-        {activeTool!=='atlas'&&mapLoading&&<MapLoading settlementName={settlementName}/>}
-        {activeTool!=='atlas'&&designLoaded&&!mapLoading&&<Suspense fallback={<MapLoading settlementName={settlementName}/>}><SettlementMapEditor activeTool={activeTool} assets={assets} buildings={buildings} setBuildings={setBuildings} selected={selectedBuilding} setSelected={setSelected} buildingViewMode={buildingViewMode} roads={roads} setRoads={setRoads} strokes={terrainStrokes} setStrokes={setTerrainStrokes} heightMap={heightMap} setHeightMap={setHeightMap} waterBodies={waterBodies} setWaterBodies={setWaterBodies} mapEnvironment={mapEnvironment} setMapEnvironment={setMapEnvironment} setFortifications={setFortifications} dusk={(simulation.time?.hour??12)>=18||(simulation.time?.hour??12)<6} lamps={lamps} partyPosition={travelContext.party_position} destination={destination} onWaypoint={(point)=>chooseDestination({...point,map_key:atlas.locations.find(location=>location.id===activeSettlementId)?.map_key||'settlement',name:'Map waypoint',road_access:true,water_access:point.x>500})} referenceLayers={referenceLayers} onReferencePoint={recordCalibrationPoint} calibrationPoints={calibrationPoints} fitRequest={fitRequest} pointsOfInterest={travelContext.points_of_interest} campaignName={headers?.campaignName||headers?.CampaignName||''} onMapContext={setMapContext} onCameraChange={playerFollow?camera=>sendPlayerCommand('camera',{camera}):null}/></Suspense>}
-        {activeTool!=='atlas'&&!designLoaded&&!mapLoading&&<div className="settlement-map-loading is-error" role="status"><strong>{saveStatus}</strong><span>Return to the Atlas and choose a settlement to try again.</span><button type="button" onClick={()=>setActiveTool('atlas')}>Open World Atlas</button></div>}
-        {activeTool!=='atlas'&&designLoaded&&!mapLoading && 
-          <div className="map-hint">{
-            activeTool==='travel'?
-              'Click terrain to set a waypoint':
-            activeTool==='build'?
-              'Choose an asset to place, or drag the selected building and its footprint handles':
-            activeTool==='terrain'?'Drag to sculpt terrain · WASD or arrows to pan':
-            activeTool==='road'?'Click a road or list entry, then choose Add Points or Edit Points':
-            activeTool==='fortification'?'Click a wall or list entry, then choose Add Points or Edit Points':
-            activeTool==='water'?'Click a path for a river or a shoreline for lakes and oceans':
-            activeTool==='region'? 'Select a region or begin drawing a new boundary' :
-            activeTool==='inspect' && firstPerson ? 'WASD walk · Left Shift sprint · Mouse aim · Esc or M releases cursor' :
-            activeTool === 'inspect' ? 'WASD pan · Q/E orbit · R/F pitch · Left Shift/Ctrl elevation · Wheel/pinch zoom' : 'WASD pan · Q/E orbit · R/F pitch · Wheel/pinch zoom'}</div>}
-        {activeTool==='inspect'&&designLoaded&&<label className="map-view-mode">Map view<select value={buildingViewMode} onChange={event=>setBuildingViewMode(event.target.value)}><option value="satellite">Satellite</option><option value="building-type">Building type</option><option value="useful">Useful buildings</option><option value="districts">Districts</option></select></label>}
-        {activeTool==='reference'&&selectedReference&&<div className="reference-projection-toggle"><label><input type="checkbox" checked={selectedReference.project_to_terrain!==false} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,project_to_terrain:event.target.checked}))}/> Project image onto sculpted terrain</label><small>Opacity controls the projected overlay, preserving the material underneath.</small></div>}
-        {mapContext&&<div className="player-map-context" style={{left:mapContext.x,top:mapContext.y}} onClick={event=>event.stopPropagation()}><strong>{mapContext.target?.building?.name||mapContext.target?.point?.name||'Map point'}</strong><button onClick={()=>{centerDmOn({point:mapContext.target?.point});setMapContext(null);}}><CenterFocusStrongIcon/> Center in view</button><button onClick={()=>centerPlayerOn(mapContext.target?.point)}><CenterFocusStrongIcon/> Center in Player View</button>{mapContext.target?.kind==='building'&&<button onClick={()=>setBuildingLabel(mapContext.target.building,!playerLabels.includes(String(mapContext.target.building.id)))}><VisibilityIcon/> {playerLabels.includes(String(mapContext.target.building.id))?'Hide building label':'Show building label'}</button>}</div>}
-        {activeTool==='atlas'&&<div className="world-atlas"><section className="atlas-stage"><div className="atlas-heading"><div><span>WORLD ATLAS</span><h3>{atlas.atlas?.name||'Campaign World'}</h3></div></div><AtlasViewport atlas={atlas.atlas} locations={atlas.locations} selectedId={movingAtlasId||activeSettlementId} onSelect={id=>openSettlement(id)} placementEnabled={movingAtlasId!=null} onPlace={async(x,y)=>{await placeSettlement(movingAtlasId,x,y);setMovingAtlasId(null);}}/><small className="atlas-help">{movingAtlasId?`Click the atlas to set ${atlas.locations.find(location=>location.id===movingAtlasId)?.name||'the settlement'}'s new position.`:`Wheel to zoom and drag to pan. Choose Move beside a settlement before changing its marker.`}</small></section><aside className="atlas-list"><div><span>SETTLEMENTS</span><strong>{atlas.locations.length}</strong></div>{(!atlas.atlas?.image_url||showAtlasUpload)&&<form className="atlas-image-upload" onSubmit={async event=>{await uploadAtlasImage(event);setShowAtlasUpload(false);}}><strong>World atlas image</strong><small>Upload a map you are permitted to use for this private campaign.</small><input type="file" accept="image/png,image/jpeg,image/webp" onChange={event=>setAtlasUpload(value=>({...value,file:event.target.files?.[0]||null}))}/><input value={atlasUpload.attribution} onChange={event=>setAtlasUpload(value=>({...value,attribution:event.target.value}))} placeholder="Attribution or source note (optional)"/><button type="submit" disabled={!atlasUpload.file}>Store atlas</button></form>}{atlas.atlas?.image_url&&!showAtlasUpload&&<button type="button" className="atlas-replace-image" onClick={()=>setShowAtlasUpload(true)}>Replace world atlas image</button>}<form onSubmit={createSettlement}><input value={newSettlementName} onChange={event=>setNewSettlementName(event.target.value)} placeholder="Settlement name"/><button type="submit"><AddIcon/> Create</button></form><div className="atlas-location-list">{atlas.locations.map(location=><article key={location.id} className={`${location.id===(movingAtlasId||activeSettlementId)?'active ':''}${location.status==='destroyed'?'destroyed':''}`}><button type="button" className="atlas-open" onClick={()=>openSettlement(location.id)}><strong>{location.name}{location.status==='destroyed'?' · Destroyed':''}</strong><small>{location.atlas_x==null?'Not placed':`${Math.round(location.atlas_x*100)}%, ${Math.round(location.atlas_y*100)}%`} · {location.settlement_type||'town'}</small></button><div className="atlas-item-actions"><button type="button" className={movingAtlasId===location.id?'active':''} onClick={()=>{setMovingAtlasId(location.id);setAtlasStatus(`Click the atlas to move ${location.name}.`);}}>Move</button>{location.atlas_x!=null&&<button type="button" onClick={()=>removeSettlementMarker(location)} title={`Remove ${location.name} from map`}>Unplace</button>}<button type="button" onClick={()=>setSettlementStatus(location,location.status==='destroyed'?'active':'destroyed')}>{location.status==='destroyed'?'Restore':'Destroy'}</button><button type="button" className="atlas-delete" onClick={()=>deleteSettlement(location)} title={`Permanently delete ${location.name}`}><DeleteOutlineIcon/></button></div></article>)}</div><small className="atlas-status">{atlasStatus}</small></aside></div>}
-        {activeTool==='reference'&&<div className="reference-menu"><span>REFERENCE LAYERS</span><form onSubmit={uploadReference}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={event=>setReferenceUpload(value=>({...value,file:event.target.files?.[0]||null,name:value.name||event.target.files?.[0]?.name.replace(/\.[^.]+$/,'')||''}))}/><label>Name<input value={referenceUpload.name} onChange={event=>setReferenceUpload(value=>({...value,name:event.target.value}))}/></label><div className="reference-dimensions"><label>Width (ft)<input type="number" min="1" value={referenceUpload.width_feet} onChange={event=>setReferenceUpload(value=>({...value,width_feet:Number(event.target.value)}))}/></label><label>Height (ft)<input type="number" min="1" value={referenceUpload.height_feet} onChange={event=>setReferenceUpload(value=>({...value,height_feet:Number(event.target.value)}))}/></label></div><button className="calculate-route" disabled={!referenceUpload.file}>Upload reference</button><small>{uploadStatus}</small></form>{referenceLayers.length>0&&<><div className="reference-layer-list">{referenceLayers.map(layer=><button key={layer.id} className={selectedReference?.id===layer.id?'active':''} onClick={()=>{setSelectedReferenceId(layer.id);setCalibrationPoints([]);}}>{layer.name}<small>{Math.round(layer.width_feet)} × {Math.round(layer.height_feet)} ft</small></button>)}</div>{selectedReference&&<div className="reference-settings"><label><input type="checkbox" checked={selectedReference.visible} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,visible:event.target.checked}))}/> Visible</label><small>Scale: {(Number(selectedReference.feet_per_pixel)||Number(selectedReference.width_feet)/Math.max(1,Number(selectedReference.pixel_width))).toFixed(3)} feet per source pixel</small><label>Opacity <strong>{Math.round(selectedReference.opacity*100)}%</strong><input type="range" min="0" max="1" step=".05" value={selectedReference.opacity} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,opacity:Number(event.target.value)}))}/></label><div className="reference-dimensions"><label>Width (ft)<input type="number" min="1" value={selectedReference.width_feet} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,width_feet:Number(event.target.value),feet_per_pixel:Number(event.target.value)/Math.max(1,Number(layer.pixel_width))}))}/></label><label>Height (ft)<input type="number" min="1" value={selectedReference.height_feet} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,height_feet:Number(event.target.value)}))}/></label><label>Center X<input type="number" value={selectedReference.origin_x} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,origin_x:Number(event.target.value)}))}/></label><label>Center Y<input type="number" value={selectedReference.origin_y} onChange={event=>updateReference(selectedReference.id,layer=>({...layer,origin_y:Number(event.target.value)}))}/></label></div><div className="calibration-box"><strong>Known-distance calibration</strong><small>{calibrationPoints[0]?`A: ${calibrationPoints[0].x}, ${calibrationPoints[0].y}`:'Click point A'} · {calibrationPoints[1]?`B: ${calibrationPoints[1].x}, ${calibrationPoints[1].y}`:'Click point B'}</small><label>Distance (ft)<input type="number" min="1" value={knownDistance} onChange={event=>setKnownDistance(Number(event.target.value))}/></label><button onClick={applyReferenceCalibration} disabled={calibrationPoints.length!==2}>Apply calibration</button></div><div className="reference-actions"><button onClick={()=>setFitRequest(value=>value+1)}>Fit in view</button><button className="danger-action" onClick={()=>{setReferenceLayers(values=>values.filter(layer=>layer.id!==selectedReference.id));setSelectedReferenceId(null);setCalibrationPoints([]);}}>Remove layer</button></div></div>}</>}</div>}
-        {activeTool==='travel'&&<div className="travel-menu"><span>PLAN A JOURNEY</span><label>Destination<select value={destination?.id||''} onChange={(e)=>chooseDestination(travelContext.points_of_interest.find(point=>point.id===Number(e.target.value))||null)}><option value="">Select a point of interest</option>{travelContext.points_of_interest.map(point=><option key={point.id} value={point.id}>{point.name}</option>)}</select></label><label>Travelers<input type="number" min="1" value={partySize} onChange={(e)=>setPartySize(Math.max(1,Number(e.target.value)))}/></label>{destination&&<><div className="travel-destination"><strong>{destination.name}</strong><small>{Math.round(destination.x)} E · {Math.round(destination.y)} N</small></div><button className="calculate-route" onClick={()=>calculateTravel()}>Calculate travel options</button></>}{travelPlan&&<div className="travel-options">{travelPlan.options.map(option=><div key={option.mode} className={!option.available?'unavailable':''}><strong>{option.label}</strong>{option.available?<><span>{formatDuration(option.elapsed_minutes)}</span><small>{option.distance_miles} mi · {formatCost(option.cost_cp)}</small></>:<small>{option.unavailable_reason}</small>}</div>)}<button className="set-party-button" onClick={setPartyHere}>Move party to destination</button></div>}</div>}
-        {activeTool==='economy'&&<div className="economy-menu"><div className="economy-header"><div><span>SETTLEMENT ECONOMY</span><h3>Market day {economy.day_index}</h3></div><div><button onClick={()=>runEconomy(1)}>Run day</button><button onClick={()=>runEconomy(10)}>Run tenday</button></div></div><div className="market-grid">{economy.markets.map(market=><article key={market.id} className={market.price_index>1.3?'shortage':''}><div><strong>{market.name}</strong><span>{market.current_price_cp} cp</span></div><small>{Math.round(market.stock)} / {Math.round(market.target_stock)} units · {market.price_index}× base</small>{market.last_imported>0&&<em>Imported {Math.round(market.last_imported)} today</em>}<div className="market-disrupt"><input type="number" min="1" value={commodityQuantity} onChange={e=>setCommodityQuantity(Math.max(1,Number(e.target.value)))}/><button onClick={()=>disruptMarket(market.commodity_key)}>Party buys</button></div></article>)}</div><div className="business-analytics"><div className="business-select"><label>Business<select value={selectedBusinessId||''} onChange={e=>setSelectedBusinessId(Number(e.target.value))}>{economy.businesses.map(business=><option key={business.id} value={business.id}>{business.name}{business.player_owned?' · Party':''}</option>)}</select></label>{selectedBusiness&&<div className="business-health"><span className={selectedBusiness.closed?'closed':''}>{selectedBusiness.closed?'Closed':'Operating'}</span><strong>{formatCost(selectedBusiness.cash_reserves_cp)} reserves</strong><small>Foot traffic {selectedBusiness.foot_traffic}× · Slump {selectedBusiness.slump_days} days</small></div>}</div><div className="chart-wrap"><div className="chart-heading"><strong>Daily sales</strong><span>Last tenday: {formatCost(tenday.revenue)} revenue · {formatCost(tenday.profit)} profit</span></div><SalesChart rows={selectedHistory}/></div></div></div>}
-        {designLoaded&&activeTool!=='atlas'&&<div className="map-location-search" onClick={event=>event.stopPropagation()}><section className="location-search"><div className="panel-kicker">FIND A LOCATION</div><input type="search" value={locationSearch} onChange={event=>setLocationSearch(event.target.value)} placeholder="Name, type, owner, faction…" aria-label="Search settlement locations"/>{locationSearch&&<div className="location-search-results">{locationResults.map(location=><button type="button" key={location.id} className={selectedLocation?.id===location.id?'active':''} onClick={()=>selectLocation(location)}><strong>{location.title}</strong><small>{location.type}{location.owner?` · ${location.owner}`:''}{textAffiliation(location)}</small></button>)}{!locationResults.length&&<small>No matching mapped locations.</small>}</div>}{selectedLocation&&<div className="location-search-selection"><strong>{selectedLocation.title}</strong><small>{selectedLocation.type}{selectedLocation.affiliation?` · ${selectedLocation.affiliation}`:''}</small><div><button type="button" onClick={()=>centerDmOn(selectedLocation)}><CenterFocusStrongIcon/> Center in view</button><button type="button" onClick={()=>centerPlayerOnLocation(selectedLocation)}><OpenInNewIcon/> Center in Player View</button></div></div>}</section></div>}
-      </main>
+      {buildingEditDraft&&<div className="settlement-modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)setBuildingEditDraft(null);}}><form className="settlement-modal building-edit-modal" onSubmit={event=>{event.preventDefault();saveBuildingEditor();}}><header><div><span>EDIT BUILDING</span><h2>{buildingEditDraft.name||'Building'}</h2></div><button type="button" onClick={()=>setBuildingEditDraft(null)} aria-label="Close"><CloseIcon/></button></header><div className="building-edit-grid"><label>Building name<input value={buildingEditDraft.name||''} onChange={event=>setBuildingEditDraft(value=>({...value,name:event.target.value}))}/></label><label>Model and footprint<select value={buildingEditDraft.asset_key||''} onChange={event=>{const asset=assets.find(item=>item.key===event.target.value);setBuildingEditDraft(value=>({...value,asset_key:event.target.value,building_type:asset?.category||value.building_type,width_feet:asset?.width_feet||value.width_feet,depth_feet:asset?.depth_feet||value.depth_feet,rooms:asset?.rooms||value.rooms}));}}>{assets.map(asset=><option key={asset.key} value={asset.key}>{asset.name} · {asset.category}</option>)}</select></label><label>Building or business type<input value={buildingEditDraft.business_type||buildingEditDraft.building_type||''} onChange={event=>setBuildingEditDraft(value=>({...value,business_type:event.target.value}))}/></label><label>Owner<input value={buildingEditDraft.owner_name||''} onChange={event=>setBuildingEditDraft(value=>({...value,owner_name:event.target.value}))}/></label><label>Owner affiliation<input value={buildingEditDraft.owner_affiliation||''} onChange={event=>setBuildingEditDraft(value=>({...value,owner_affiliation:event.target.value}))}/></label><label>District<input value={buildingEditDraft.district_key||''} onChange={event=>setBuildingEditDraft(value=>({...value,district_key:event.target.value}))}/></label><label>Factions<input value={buildingEditDraft.factions||''} onChange={event=>setBuildingEditDraft(value=>({...value,factions:event.target.value}))}/></label><label>Search tags<input value={buildingEditDraft.tags||''} onChange={event=>setBuildingEditDraft(value=>({...value,tags:event.target.value}))}/></label><label>Elevation offset (ft)<input type="number" value={Number(buildingEditDraft.elevation)||0} onChange={event=>setBuildingEditDraft(value=>({...value,elevation:Number(event.target.value)||0}))}/></label><label className="wide">Description<textarea value={buildingEditDraft.description||''} onChange={event=>setBuildingEditDraft(value=>({...value,description:event.target.value}))}/></label></div><footer><button type="button" onClick={()=>setBuildingEditDraft(null)}>Cancel</button><button type="submit">Save building</button></footer></form></div>}
+      {buildingEvents&&<div className="settlement-modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)setBuildingEvents(null);}}><section className="settlement-modal building-event-modal"><header><div><span>BUILDING EVENTS</span><h2>{selectedBuilding?.name}</h2></div><button type="button" onClick={()=>setBuildingEvents(null)} aria-label="Close"><CloseIcon/></button></header><p>Choose one event to introduce now. People and details are drawn from the selected building and settlement simulation.</p><div className="building-event-options">{buildingEvents.map((event,index)=><button type="button" key={event} onClick={()=>startBuildingEvent(event)}><strong>{index+1}</strong><span>{event}</span></button>)}</div></section></div>}
     </div>
-    {buildingEditDraft&&<div className="settlement-modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)setBuildingEditDraft(null);}}><form className="settlement-modal building-edit-modal" onSubmit={event=>{event.preventDefault();saveBuildingEditor();}}><header><div><span>EDIT BUILDING</span><h2>{buildingEditDraft.name||'Building'}</h2></div><button type="button" onClick={()=>setBuildingEditDraft(null)} aria-label="Close"><CloseIcon/></button></header><div className="building-edit-grid"><label>Building name<input value={buildingEditDraft.name||''} onChange={event=>setBuildingEditDraft(value=>({...value,name:event.target.value}))}/></label><label>Model and footprint<select value={buildingEditDraft.asset_key||''} onChange={event=>{const asset=assets.find(item=>item.key===event.target.value);setBuildingEditDraft(value=>({...value,asset_key:event.target.value,building_type:asset?.category||value.building_type,width_feet:asset?.width_feet||value.width_feet,depth_feet:asset?.depth_feet||value.depth_feet,rooms:asset?.rooms||value.rooms}));}}>{assets.map(asset=><option key={asset.key} value={asset.key}>{asset.name} · {asset.category}</option>)}</select></label><label>Building or business type<input value={buildingEditDraft.business_type||buildingEditDraft.building_type||''} onChange={event=>setBuildingEditDraft(value=>({...value,business_type:event.target.value}))}/></label><label>Owner<input value={buildingEditDraft.owner_name||''} onChange={event=>setBuildingEditDraft(value=>({...value,owner_name:event.target.value}))}/></label><label>Owner affiliation<input value={buildingEditDraft.owner_affiliation||''} onChange={event=>setBuildingEditDraft(value=>({...value,owner_affiliation:event.target.value}))}/></label><label>District<input value={buildingEditDraft.district_key||''} onChange={event=>setBuildingEditDraft(value=>({...value,district_key:event.target.value}))}/></label><label>Factions<input value={buildingEditDraft.factions||''} onChange={event=>setBuildingEditDraft(value=>({...value,factions:event.target.value}))}/></label><label>Search tags<input value={buildingEditDraft.tags||''} onChange={event=>setBuildingEditDraft(value=>({...value,tags:event.target.value}))}/></label><label>Elevation offset (ft)<input type="number" value={Number(buildingEditDraft.elevation)||0} onChange={event=>setBuildingEditDraft(value=>({...value,elevation:Number(event.target.value)||0}))}/></label><label className="wide">Description<textarea value={buildingEditDraft.description||''} onChange={event=>setBuildingEditDraft(value=>({...value,description:event.target.value}))}/></label></div><footer><button type="button" onClick={()=>setBuildingEditDraft(null)}>Cancel</button><button type="submit">Save building</button></footer></form></div>}
-    {buildingEvents&&<div className="settlement-modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)setBuildingEvents(null);}}><section className="settlement-modal building-event-modal"><header><div><span>BUILDING EVENTS</span><h2>{selectedBuilding?.name}</h2></div><button type="button" onClick={()=>setBuildingEvents(null)} aria-label="Close"><CloseIcon/></button></header><p>Choose one event to introduce now. People and details are drawn from the selected building and settlement simulation.</p><div className="building-event-options">{buildingEvents.map((event,index)=><button type="button" key={event} onClick={()=>startBuildingEvent(event)}><strong>{index+1}</strong><span>{event}</span></button>)}</div></section></div>}
-  </div>;
+  );
 }

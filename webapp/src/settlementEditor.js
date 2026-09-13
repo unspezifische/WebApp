@@ -39,18 +39,22 @@ export const threeToWorld = (point) => ({
   elevation: point.y * FEET_PER_SCENE_UNIT,
 });
 
+
 export function referenceLayerUv(layer, xFeet, yFeet) {
   const angle = (Number(layer?.rotation_degrees) || 0) * Math.PI / 180;
   const cos = Math.cos(angle), sin = Math.sin(angle);
   const dx = xFeet - (Number(layer?.origin_x) || 0);
   const dy = yFeet - (Number(layer?.origin_y) || 0);
+
   const localX = dx * cos + dy * sin;
-  const localY = -dx * sin + dy * cos;
+  const localY = dx * sin - dy * cos; // Align orientation tracks cleanly
+
   return {
     u: localX / Math.max(1, Number(layer?.width_feet) || 1) + .5,
     v: localY / Math.max(1, Number(layer?.height_feet) || 1) + .5,
   };
 }
+
 
 export function firstPersonLookAngles(yaw, pitch, movementX, movementY, settings = {}) {
   const sensitivity = Math.max(.1, Number(settings.sensitivity) || 50) * .000044;
@@ -78,19 +82,22 @@ export function calibrateReferenceLayer(layer, pointA, pointB, knownDistanceFeet
 
 export function heightmapHeightAt(heightmap, x, y) {
   if (!heightmap?.values?.length || !heightmap.grid_width || !heightmap.grid_height) return 0;
-  const width=Math.max(1,Number(heightmap.width_feet)||1),height=Math.max(1,Number(heightmap.height_feet)||1);
-  const u=(x-(Number(heightmap.origin_x)||0)+width/2)/width;
-  const v=1-(y-(Number(heightmap.origin_y)||0)+height/2)/height;
-  if(u<0||u>1||v<0||v>1)return 0;
-  const gridWidth=Number(heightmap.grid_width),gridHeight=Number(heightmap.grid_height);
-  const gx=u*(gridWidth-1),gy=v*(gridHeight-1),x0=Math.floor(gx),y0=Math.floor(gy),x1=Math.min(gridWidth-1,x0+1),y1=Math.min(gridHeight-1,y0+1);
-  const sample=(column,row)=>(Number(heightmap.values[row*gridWidth+column])||0)/255;
-  const top=sample(x0,y0)+(sample(x1,y0)-sample(x0,y0))*(gx-x0);
-  const bottom=sample(x0,y1)+(sample(x1,y1)-sample(x0,y1))*(gx-x0);
-  const normalized=top+(bottom-top)*(gy-y0);
-  const minimum=Number(heightmap.min_elevation_feet)||0,range=(Number(heightmap.max_elevation_feet)||250)-minimum,strength=Number(heightmap.strength??1),pivot=Number(heightmap.strength_pivot_feet)||0;
-  const elevation=minimum+normalized*range;
-  return pivot+(elevation-pivot)*(Number.isFinite(strength)?strength:1);
+  const width = Math.max(1, Number(heightmap.width_feet) || 1);
+  const height = Math.max(1, Number(heightmap.height_feet) || 1);
+  const originX = Number.isFinite(heightmap.origin_x) ? heightmap.origin_x : 0;
+  const originY = Number.isFinite(heightmap.origin_y) ? heightmap.origin_y : 0;
+  const u = (x - originX + width / 2) / width;
+  const v = 1 - (y - originY + height / 2) / height;
+  if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+  const gridWidth = Number(heightmap.grid_width), gridHeight = Number(heightmap.grid_height);
+  const gx = u * (gridWidth - 1), gy = v * (gridHeight - 1), x0 = Math.floor(gx), y0 = Math.floor(gy), x1 = Math.min(gridWidth - 1, x0 + 1), y1 = Math.min(gridHeight - 1, y0 + 1);
+  const sample = (column, row) => (Number(heightmap.values[row * gridWidth + column]) || 0) / 255;
+  const top = sample(x0, y0) + (sample(x1, y0) - sample(x0, y0)) * (gx - x0);
+  const bottom = sample(x0, y1) + (sample(x1, y1) - sample(x0, y1)) * (gx - x0);
+  const normalized = top + (bottom - top) * (gy - y0);
+  const minimum = Number(heightmap.min_elevation_feet) || 0, range = (Number(heightmap.max_elevation_feet) || 250) - minimum, strength = Number(heightmap.strength ?? 1), pivot = Number(heightmap.strength_pivot_feet) || 0;
+  const elevation = minimum + normalized * range;
+  return pivot + (elevation - pivot) * (Number.isFinite(strength) ? strength : 1);
 }
 
 export function terrainHeightAt(strokes, x, y, heightmap = null) {
@@ -443,61 +450,73 @@ export function createDefaultHeightmap() {
  */
 export function bakeStrokeIntoHeightmap(heightmap, stroke) {
   if (!heightmap || !heightmap.values || !stroke) return;
-  
+
   const { x, y, radius, strength, mode, target_elevation_feet } = stroke;
   const grid_width = heightmap.grid_width;
   const grid_height = heightmap.grid_height;
   const values = heightmap.values;
-  
-  // Convert world coordinates to grid indices
+
+  const range = (Number(heightmap.max_elevation_feet) || 250) - (Number(heightmap.min_elevation_feet) || 0);
+  const minimum = Number(heightmap.min_elevation_feet) || 0;
+
   const width_feet = Number(heightmap.width_feet) || 1800;
   const height_feet = Number(heightmap.height_feet) || 1800;
-  const origin_x = Number(heightmap.origin_x) || -900;
-  const origin_y = Number(heightmap.origin_y) || -900;
-  
-  // Convert world coordinates to normalized grid space
+  const origin_x = Number.isFinite(heightmap.origin_x) ? heightmap.origin_x : 0;
+  const origin_y = Number.isFinite(heightmap.origin_y) ? heightmap.origin_y : 0;
+
   const u = (x - origin_x + width_feet / 2) / width_feet;
   const v = 1 - (y - origin_y + height_feet / 2) / height_feet;
-  
-  if (u < 0 || u > 1 || v < 0 || v > 1) return; // Point outside bounds
-  
+
+  // DEBUG: everything we need to know before the bounds check
+  console.log('[bake] grid_width/height:', grid_width, grid_height,
+    'width/height_feet:', width_feet, height_feet,
+    'origin:', origin_x, origin_y,
+    'u/v:', u, v,
+    'strength:', strength, 'mode:', mode);
+
+  if (u < 0 || u > 1 || v < 0 || v > 1) {
+    console.log('[bake] OUT OF BOUNDS — stroke discarded');
+    return;
+  }
+
   const gx = u * (grid_width - 1);
   const gy = v * (grid_height - 1);
-  
-  // Determine the range of grid cells to update
+
   const radius_cells = Math.max(1, Math.floor(radius / (width_feet / grid_width)));
   const min_x = Math.max(0, Math.floor(gx - radius_cells));
   const max_x = Math.min(grid_width - 1, Math.ceil(gx + radius_cells));
   const min_y = Math.max(0, Math.floor(gy - radius_cells));
   const max_y = Math.min(grid_height - 1, Math.ceil(gy + radius_cells));
-  
-  // Apply the stroke to each affected cell
+
+  console.log('[bake] gx/gy:', gx, gy, 'cell range:', min_x, max_x, min_y, max_y);
+
+  const centerIndex = Math.round(gy) * grid_width + Math.round(gx);
+  const centerBefore = values[centerIndex];
+
   for (let grid_y = min_y; grid_y <= max_y; grid_y++) {
     for (let grid_x = min_x; grid_x <= max_x; grid_x++) {
-      const cell_x = (grid_x / (grid_width - 1)) * width_feet + origin_x;
-      const cell_y = (1 - grid_y / (grid_height - 1)) * height_feet + origin_y;
-      
+      const cell_x = (grid_x / (grid_width - 1)) * width_feet + origin_x - width_feet / 2;
+      const cell_y = (1 - grid_y / (grid_height - 1)) * height_feet + origin_y - height_feet / 2;
       const distance = Math.hypot(cell_x - x, cell_y - y);
       if (distance >= radius) continue;
-      
-      // Quadratic falloff: (1 - (dist/radius)^2)^2
+
       const normalized = 1 - (distance / radius) ** 2;
       const falloff = Math.max(0, normalized * normalized);
-      
       const cellIndex = grid_y * grid_width + grid_x;
-      
+
       if (mode === 'flatten' || mode === 'smooth') {
-        // For flatten/smooth modes, blend with target elevation
         const target = Number(target_elevation_feet);
         const amount = Math.max(0, Math.min(1, Number(strength) || 0)) * falloff;
-        if (Number.isFinite(target)) {
-          values[cellIndex] = values[cellIndex] + (target - values[cellIndex]) * amount;
+        if (Number.isFinite(target) && range > 0) {
+          const targetNormalized = ((target - minimum) / range) * 255;
+          values[cellIndex] = values[cellIndex] + (targetNormalized - values[cellIndex]) * amount;
         }
       } else {
-        // For raise/lower modes
-        const delta = Number(stroke.delta || 0) * falloff * strength;
-        values[cellIndex] += delta;
+        const delta = Number(strength || 0) * falloff;
+        if (range > 0) values[cellIndex] += (delta / range) * 255;
       }
     }
   }
+
+  console.log('[bake] center cell before/after:', centerBefore, values[centerIndex]);
 }

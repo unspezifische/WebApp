@@ -62,5 +62,30 @@ Features:
     - A travel system is being developed to calculate time and distance between points, including options for walking, riding, or flying. In-world Time of Day will adjust accordingly.
     - Integration with OpenLayers and GeoJSON for handling map layers and data.
 
+## TODOs
+- switch to a system-agnostic way of storing character (both player and non-player) attributes.
+- Move "Atmospheric Settings" to the Atlas-level, rather than individual settlements.
+- Implement "Add buidling" workflow:
+    - [Developing Build a House from Plans](https://doc.babylonjs.com/guidedLearning/workshop/House/)
+    - [Using Build a House from Plans](https://doc.babylonjs.com/guidedLearning/workshop/House_Use/)
+    - [Adding a Roof to a House Built from Plans](https://doc.babylonjs.com/guidedLearning/workshop/roof/)
+
+- Need an Asset Importer for importing character models
+    - Imported models can be selected from a library panel
+- Animation library
+    - Walking
+    - Running
+    - sitting
+    - eating (raising utensil from table to mouth)
+    - drinking (raising cup/mug/tankard to mouth)
+    - Ready to Fight stance
+    - Falling down
+    - Casting magic
+    - Riding a wagon
+    - mounting/dismounting wagon
+    - Riding a horse
+    - mounting/dismounting horse
+    - swimming animation (underwater and surface swimming. slow & fast?)
+
 ## Database Updates
 If, in the course of development, the tables change in Flask, it will be necessary to upgrade the database to match the new Flask configuration. To do this, navigate either to the Docker container running Flask or the command line, and type `flask db migrate -m "explain what changed"`, then `flask db upgrade` to commit those changes.

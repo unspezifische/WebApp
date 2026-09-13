@@ -51,6 +51,7 @@ services:
       - ./Flask:/app
       - ./5etools-src:/5etools-src:ro  # Mount 5etools data as read-only
       - myapp_socket:/tmp
+      - ./Flask/media:/app/media
     ports:
       - "5001:5000"
     environment:

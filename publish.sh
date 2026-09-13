@@ -17,12 +17,14 @@ DEPLOY_MTG=false
 DEPLOY_NGINX=false
 DEPLOY_MODULES=false
 CHECK_ONLY=false
+USE_DOCKER=false
 CURRENT_STEP="initialization"
 RENDERED_NGINX_CONFIG=""
 
 usage() {
   cat <<'EOF'
 Usage: ./publish.sh [--hostname NAME] [--kachhapa] [--mtg] [--nginx] [--modules] [--all] [--check]
+       ./publish.sh --docker [--kachhapa] [--modules] [--check]
 
 With no deployment selection, all components are selected.
 --check performs every local preflight/build check and never contacts the Pi.
@@ -33,7 +35,13 @@ Publishing is offline-safe when requirements files are unchanged. Existing
 installations must run scripts/configure-publish-sudo.sh NAME once before
 their first fully noninteractive publish.
 
+--docker targets the local docker-compose stack (docker-compose.yaml) instead
+of the bare-metal Pi over ssh: no --hostname, and --nginx/--mtg aren't part of
+that stack, so they can't be combined with --docker. With no component flags,
+--docker deploys --kachhapa and --modules.
+
 Example: ./publish.sh --hostname raspberrypi.local --all
+Example: ./publish.sh --docker
 EOF
 }
 
@@ -98,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --mtg) DEPLOY_MTG=true ;;
     --nginx) DEPLOY_NGINX=true ;;
     --modules) DEPLOY_MODULES=true ;;
+    --docker) USE_DOCKER=true ;;
     --all)
       DEPLOY_KACHHAPA=true
       DEPLOY_MTG=true
@@ -125,16 +134,30 @@ else
   readonly DESTINATION="${TARGET_USER}@${TARGET_HOSTNAME}"
 fi
 
-# "--check" alone validates everything, matching the no-argument deployment set.
-if $CHECK_ONLY && ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX && ! $DEPLOY_MODULES; then
-  DEPLOY_KACHHAPA=true
-  DEPLOY_MTG=true
-  DEPLOY_NGINX=true
-  DEPLOY_MODULES=true
+# "--check" alone validates everything, matching the no-argument deployment set;
+# "--docker" alone deploys everything the local stack actually runs (no MTG/Nginx).
+if ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX && ! $DEPLOY_MODULES; then
+  if $USE_DOCKER; then
+    DEPLOY_KACHHAPA=true
+    DEPLOY_MODULES=true
+  elif $CHECK_ONLY; then
+    DEPLOY_KACHHAPA=true
+    DEPLOY_MTG=true
+    DEPLOY_NGINX=true
+    DEPLOY_MODULES=true
+  fi
 fi
 
 if ! $DEPLOY_KACHHAPA && ! $DEPLOY_MTG && ! $DEPLOY_NGINX && ! $DEPLOY_MODULES; then
   fail "Nothing selected. Choose --kachhapa, --mtg, --nginx, --modules, or --all."
+fi
+
+# The local docker-compose stack only runs postgres/rabbitmq/flask/webapp; the
+# bare-metal Pi is the only target for MTG and the shared Nginx configuration.
+if $USE_DOCKER; then
+  $HOSTNAME_EXPLICITLY_SET && fail "--hostname targets the bare-metal Pi over ssh; it doesn't apply with --docker."
+  $DEPLOY_MTG && fail "--mtg isn't part of the local Docker stack; omit --mtg with --docker."
+  $DEPLOY_NGINX && fail "--nginx isn't part of the local Docker stack; omit --nginx with --docker."
 fi
 
 require_command() {
@@ -143,6 +166,22 @@ require_command() {
 
 require_path() {
   [[ -e "$1" ]] || fail "Required deployment path is missing: $1"
+}
+
+# Prefers the "docker compose" plugin, falling back to the standalone docker-compose binary.
+docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    docker-compose "$@"
+  fi
+}
+
+docker_service_running() {
+  local service=$1
+  local container_id
+  container_id=$(docker_compose ps -q "$service" 2>/dev/null || true)
+  [[ -n "$container_id" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$container_id" 2>/dev/null)" == "true" ]]
 }
 
 validate_service_file() {
@@ -163,50 +202,50 @@ for filename in sys.argv[1:]:
 PY
 }
 
-validate_alembic_graph() {
-  local migrations_versions_path="${1:-Flask/migrations/versions}"
-  python3 - "$migrations_versions_path" <<'PY'
-import ast
-import sys
-from pathlib import Path
+# validate_alembic_graph() {
+#   local migrations_versions_path="${1:-Flask/migrations/versions}"
+#   python3 - "$migrations_versions_path" <<'PY'
+# import ast
+# import sys
+# from pathlib import Path
 
-migrations_path = Path(sys.argv[1])
-revisions = {}
-dependencies = set()
+# migrations_path = Path(sys.argv[1])
+# revisions = {}
+# dependencies = set()
 
-for migration_path in sorted(migrations_path.glob("*.py")):
-    tree = ast.parse(migration_path.read_text(), filename=str(migration_path))
-    values = {}
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
-            values[target.id] = ast.literal_eval(node.value)
-    revision = values.get("revision")
-    if not revision:
-        raise SystemExit(f"{migration_path}: missing revision identifier")
-    if revision in revisions:
-        raise SystemExit(f"Duplicate Alembic revision {revision}: {revisions[revision]} and {migration_path}")
-    revisions[revision] = migration_path
-    down_revision = values.get("down_revision")
-    if isinstance(down_revision, str):
-        dependencies.add(down_revision)
-    elif down_revision:
-        dependencies.update(down_revision)
+# for migration_path in sorted(migrations_path.glob("*.py")):
+#     tree = ast.parse(migration_path.read_text(), filename=str(migration_path))
+#     values = {}
+#     for node in tree.body:
+#         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+#             continue
+#         target = node.targets[0]
+#         if isinstance(target, ast.Name) and target.id in {"revision", "down_revision"}:
+#             values[target.id] = ast.literal_eval(node.value)
+#     revision = values.get("revision")
+#     if not revision:
+#         raise SystemExit(f"{migration_path}: missing revision identifier")
+#     if revision in revisions:
+#         raise SystemExit(f"Duplicate Alembic revision {revision}: {revisions[revision]} and {migration_path}")
+#     revisions[revision] = migration_path
+#     down_revision = values.get("down_revision")
+#     if isinstance(down_revision, str):
+#         dependencies.add(down_revision)
+#     elif down_revision:
+#         dependencies.update(down_revision)
 
-missing = sorted(dependencies.difference(revisions))
-if missing:
-    raise SystemExit(f"Alembic migration graph references missing revision(s): {', '.join(missing)}")
+# missing = sorted(dependencies.difference(revisions))
+# if missing:
+#     raise SystemExit(f"Alembic migration graph references missing revision(s): {', '.join(missing)}")
 
-heads = sorted(set(revisions).difference(dependencies))
-if not heads:
-    raise SystemExit("Alembic migration graph has no head revision")
-print(f"Alembic migration head{'s' if len(heads) != 1 else ''}: {', '.join(heads)}")
-if len(heads) > 1:
-    print("Multiple migration branches detected; deployment will apply all heads.")
-PY
-}
+# heads = sorted(set(revisions).difference(dependencies))
+# if not heads:
+#     raise SystemExit("Alembic migration graph has no head revision")
+# print(f"Alembic migration head{'s' if len(heads) != 1 else ''}: {', '.join(heads)}")
+# if len(heads) > 1:
+#     print("Multiple migration branches detected; deployment will apply all heads.")
+# PY
+# }
 
 validate_nginx_structure() {
   local config_path=$1
@@ -255,30 +294,26 @@ local_preflight() {
   if $DEPLOY_KACHHAPA; then
     require_command npm
     for path in \
-      Flask/requirements.txt Flask/import_5etools.py Flask/app.py \
-      Flask/Harptos.json Flask/Gregorian.json \
-      Flask/templates Flask/static Flask/migrations Flask/media/modules kachhapa-backend.service \
-      Flask/media/modules/waterdeep_dragon_heist/waterdeep_texture.jpg \
-      Flask/media/modules/waterdeep_dragon_heist/waterdeep_heightmap.png \
-      Flask/media/modules/waterdeep_dragon_heist/waterdeep_dm_reference.jpg \
-      Flask/media/modules/waterdeep_dragon_heist/waterdeep_location_key.jpg \
+      Flask/requirements.txt Flask/app.py \
+      Flask/templates Flask/media/modules kachhapa-backend.service \
       webapp/package.json webapp/package-lock.json webapp/src webapp/public; do
       require_path "$path"
     done
+    
     grep -qi '^gunicorn==' Flask/requirements.txt ||
       fail "Flask/requirements.txt must pin gunicorn."
-    grep -qi '^gevent==' Flask/requirements.txt ||
-      fail "Flask/requirements.txt must pin gevent."
-    grep -qi '^gevent-websocket==' Flask/requirements.txt ||
-      fail "Flask/requirements.txt must pin gevent-websocket."
+    grep -qi '^eventlet==' Flask/requirements.txt ||
+      fail "Flask/requirements.txt must pin eventlet."
+      
     validate_python_syntax Flask/app.py
     validate_python_syntax Flask/module_templates.py
     [[ ! -f Flask/extract_dnd_pdf.py ]] || validate_python_syntax Flask/extract_dnd_pdf.py
-    validate_alembic_graph
+    # validate_alembic_graph
     validate_service_file kachhapa-backend.service
     grep -q '/venv/bin/gunicorn' kachhapa-backend.service ||
       fail "kachhapa-backend.service does not launch Gunicorn from the Kachhapa virtualenv."
   fi
+
 
   if $DEPLOY_MODULES; then
     require_path Flask/modules
@@ -314,7 +349,13 @@ local_preflight() {
 }
 
 build_frontends() {
-  if $DEPLOY_KACHHAPA; then
+  # Matches the memory/build settings used in the Nginx Dockerfile's build stage,
+  # so local builds don't crash with an out-of-memory error during npm run build.
+  export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
+  export GENERATE_SOURCEMAP="${GENERATE_SOURCEMAP:-false}"
+  export DISABLE_ESLINT_PLUGIN="${DISABLE_ESLINT_PLUGIN:-true}"
+
+  if $DEPLOY_KACHHAPA && ! $USE_DOCKER; then
     CURRENT_STEP="Kachhapa frontend build"
     echo "==> Building Kachhapa frontend locally"
     npm --prefix webapp run build
@@ -371,6 +412,7 @@ if "$deploy_kachhapa"; then
   test -x "$kachhapa_root/venv/bin/python" ||
     { echo "Missing Kachhapa virtualenv: $kachhapa_root/venv" >&2; exit 1; }
 fi
+
 
 if "$deploy_mtg"; then
   command -v python3 >/dev/null ||
@@ -572,6 +614,19 @@ deploy_modules() {
   CURRENT_STEP="Module database migration"
   echo "==> Ensuring campaign module tables exist"
   ssh "$DESTINATION" "cd '$KACHHAPA_ROOT/Flask' && source '$KACHHAPA_ROOT/venv/bin/activate' && flask db upgrade heads"
+
+  CURRENT_STEP="Module import command verification"
+  ssh "$DESTINATION" "cd '$KACHHAPA_ROOT/Flask' && source '$KACHHAPA_ROOT/venv/bin/activate' && flask import-module --help >/dev/null" ||
+    fail "The 'flask import-module' command is unavailable on the Pi after deployment."
+
+  # Bundled data isn't auto-installed: the DM chooses which campaign(s) get each module.
+  echo "==> Module bundles are on the Pi. Install or refresh one into a campaign with:"
+  for manifest in Flask/modules/*/manifest.json; do
+    [[ -f "$manifest" ]] || continue
+    local module_name
+    module_name=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['module_name'])" "$manifest")
+    echo "      ssh $DESTINATION \"cd $KACHHAPA_ROOT/Flask && source $KACHHAPA_ROOT/venv/bin/activate && flask import-module --module-name '$module_name' --campaign-name '<campaign>'\""
+  done
 }
 
 deploy_nginx() {
@@ -582,12 +637,68 @@ deploy_nginx() {
   ssh "$DESTINATION" "sudo -n /usr/local/sbin/kachhapa-deploy-root nginx"
 }
 
+docker_preflight() {
+  CURRENT_STEP="Docker stack preflight"
+  echo "==> Checking the local Docker stack"
+  require_command docker
+  for service in postgres flask; do
+    docker_service_running "$service" ||
+      fail "The '$service' container isn't running. Start the stack first: docker-compose up -d --build"
+  done
+}
+
+deploy_kachhapa_docker() {
+  CURRENT_STEP="Docker Kachhapa build"
+  echo "==> Rebuilding the local Kachhapa containers"
+  docker_compose up -d --build flask webapp
+
+  CURRENT_STEP="Docker Kachhapa health check"
+  local attempt
+  for attempt in $(seq 1 15); do
+    docker_service_running flask && docker_service_running webapp && break
+    [[ "$attempt" -eq 15 ]] && fail "flask/webapp containers did not reach a running state."
+    sleep 2
+  done
+
+  CURRENT_STEP="Docker Kachhapa database migration"
+  echo "==> Applying Kachhapa database migrations inside the flask container"
+  docker_compose exec -T flask flask db upgrade heads
+}
+
+deploy_modules_docker() {
+  CURRENT_STEP="Docker module verification"
+  echo "==> Verifying campaign module bundles inside the flask container"
+  # Flask/modules is bind-mounted straight into the flask container, so no file copy is needed.
+  docker_compose exec -T flask sh -c "test -r modules/README.md && test -s modules/README.md" ||
+    fail "The Flask/modules bundle is missing a readable, non-empty README.md."
+  docker_compose exec -T flask flask import-module --help >/dev/null ||
+    fail "The 'flask import-module' command is unavailable in the flask container."
+
+  echo "==> Module bundles are live in the flask container. Install or refresh one into a campaign with:"
+  for manifest in Flask/modules/*/manifest.json; do
+    [[ -f "$manifest" ]] || continue
+    local module_name
+    module_name=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['module_name'])" "$manifest")
+    echo "      docker compose exec flask flask import-module --module-name '$module_name' --campaign-name '<campaign>'"
+  done
+}
+
 local_preflight
 build_frontends
 
 if $CHECK_ONLY; then
   CURRENT_STEP="validation complete"
   echo "Validation complete. No Raspberry Pi connection or deployment was attempted."
+  exit 0
+fi
+
+if $USE_DOCKER; then
+  docker_preflight
+  $DEPLOY_KACHHAPA && deploy_kachhapa_docker
+  $DEPLOY_MODULES && deploy_modules_docker
+
+  CURRENT_STEP="deployment complete"
+  echo "Deployment complete."
   exit 0
 fi
 

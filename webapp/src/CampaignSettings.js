@@ -6,15 +6,23 @@ import IconEditorModal from './IconEditorModal';
 import './CampaignSettings.css';
 
 export default function CampaignSettings({ campaignID, headers, embedded = false }) {
-  const [settings,setSettings]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
-  const [showAdd,setShowAdd]=useState(false),[selectedKey,setSelectedKey]=useState(''),[preview,setPreview] = useState(null);
-  const [settlementStrategy,setSettlementStrategy]=useState('merge'),[calendarStrategy,setCalendarStrategy] = useState('keep_current');
-  const [installing,setInstalling]=useState(false),[notice,setNotice] = useState('');
-  const [iconSaving,setIconSaving]=useState(false),[iconInputKey,setIconInputKey] = useState(0);
-  const [iconModalOpen,setIconModalOpen]=useState(false);
-  const [rulesetSaving,setRulesetSaving]=useState(false);
-  const [campaignName,setCampaignName]=useState(''),[nameSaving,setNameSaving]=useState(false);
-  const [refreshingModule,setRefreshingModule]=useState('');
+  const [settings,setSettings] = useState(null)
+  const [loading,setLoading]=useState(true)
+  const [error,setError]=useState('');
+  const [showAdd,setShowAdd] = useState(false)
+  const [selectedKey,setSelectedKey]=useState('')
+  const [preview,setPreview] = useState(null);
+  const [settlementStrategy,setSettlementStrategy] = useState('merge')
+  const [calendarStrategy,setCalendarStrategy] = useState('keep_current');
+  const [installing,setInstalling] = useState(false)
+  const [notice,setNotice] = useState('');
+  const [iconSaving,setIconSaving] = useState(false)
+  // const [iconInputKey,setIconInputKey] = useState(0);
+  const [iconModalOpen,setIconModalOpen] = useState(false);
+  const [rulesetSaving,setRulesetSaving] = useState(false);
+  const [campaignName,setCampaignName] = useState('')
+  const [nameSaving,setNameSaving]=useState(false);
+  const [refreshingModule,setRefreshingModule] = useState('');
 
   const loadSettings=useCallback(async()=>{
     setLoading(true);setError('');
@@ -57,18 +65,58 @@ export default function CampaignSettings({ campaignID, headers, embedded = false
     finally{setInstalling(false);}
   };
 
-  const refreshModule=async(module)=>{
-    setRefreshingModule(module.module_key);setError('');setNotice('');
-    try{
-      const response=await axios.post(
+  const refreshModule = async (module) => {
+    setRefreshingModule(module.module_key); setError(''); setNotice('');
+    try {
+      const response = await axios.post(
         `/api/campaigns/${campaignID}/modules/${module.module_key}/refresh`,
-        {settlement_strategy:'merge'},
-        {headers},
+        { settlement_strategy: 'merge' },
+        { headers },
       );
-      setNotice(`${module.module_name} refreshed. ${response.data.npcs_added} new NPC${response.data.npcs_added===1?'':'s'} added to the library.`);
+
+      const { npcs_added, wiki_pages_added, settlement_result, settlement_name } = response.data;
+      const summaryParts = [];
+
+      // 1. Process NPCs breakdown
+      if (npcs_added > 0) {
+        summaryParts.push(`${npcs_added} new NPC${npcs_added === 1 ? '' : 's'}`);
+      }
+
+      // 2. Process Wiki Pages breakdown
+      if (wiki_pages_added > 0) {
+        summaryParts.push(`${wiki_pages_added} wiki page${wiki_pages_added === 1 ? '' : 's'}`);
+      }
+
+      // 3. Process Settlement Map breakdown
+      if (settlement_result && settlement_result !== 'none') {
+        const actionMap = {
+          created: 'imported',
+          merged: 'merged',
+          overridden: 'overridden'
+        };
+        const actionWord = actionMap[settlement_result] || 'updated';
+        summaryParts.push(`the "${settlement_name || 'Settlement'}" map was ${actionWord}`);
+      }
+
+      // 4. Construct the final announcement notice sentence
+      if (summaryParts.length > 0) {
+        // Formats nicely: "Item A, Item B, and Item C added/updated."
+        const lastPart = summaryParts.pop();
+        const localizedList = summaryParts.length > 0
+          ? `${summaryParts.join(', ')}, and ${lastPart}`
+          : lastPart;
+
+        setNotice(`${module.module_name} refreshed. Changes applied: ${localizedList}.`);
+      } else {
+        setNotice(`${module.module_name} refreshed. Everything was already up to date!`);
+      }
+
       await loadSettings();
-    }catch(requestError){setError(requestError.response?.data?.message||'Unable to refresh module content');}
-    finally{setRefreshingModule('');}
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || 'Unable to refresh module content');
+    } finally {
+      setRefreshingModule('');
+    }
   };
 
   const replaceCampaign=(campaign)=>setSettings(current=>({...current,campaign}));
